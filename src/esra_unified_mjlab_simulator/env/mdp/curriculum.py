@@ -1,131 +1,96 @@
+"""Fixed flat-ground standing curriculum using the existing environment entry points.
+
+The environment already imports this module through ``mdp``. Before a scene is
+built, restrict its shared terrain preset to flat patches and provide a standing
+command configuration under the existing name. The reset callbacks keep these
+settings fixed; the old velocity stages are deliberately unused. Random pushes
+remain entirely under the environment's event configuration.
+"""
+
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypedDict, cast
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
-from mjlab.entity import Entity
-from mjlab.managers.scene_entity_config import SceneEntityCfg
+from mjlab.terrains.config import ROUGH_TERRAINS_CFG, flat
 
-from .command import UniformVelocityCommand, UniformVelocityCommandCfg
+from .command import UniformVelocityCommand
+from .command import UniformVelocityCommandCfg as _VelocityCommandCfg
 
 if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
 
-_DEFAULT_SCENE_CFG = SceneEntityCfg("robot")
+__all__ = ["UniformVelocityCommandCfg", "commands_vel", "terrain_levels_vel"]
+
+# velocity_env.py copies this shared preset when constructing each environment.
+# Select flat patches before construction, rather than changing an existing scene.
+# One training row also clamps the existing max_init_terrain_level to level zero.
+ROUGH_TERRAINS_CFG.sub_terrains = {"flat": flat(proportion=1.0)}
+ROUGH_TERRAINS_CFG.num_rows = 1
+ROUGH_TERRAINS_CFG.num_cols = 1
 
 
-class VelocityStage(TypedDict):
-    step: int
-    lin_vel_x: tuple[float, float] | None
-    lin_vel_y: tuple[float, float] | None
-    ang_vel_z: tuple[float, float] | None
+def _set_standing_command(cfg: _VelocityCommandCfg) -> None:
+    cfg.ranges = cfg.Ranges(
+        lin_vel_x=(0.0, 0.0),
+        lin_vel_y=(0.0, 0.0),
+        ang_vel_z=(0.0, 0.0),
+        heading=None,
+    )
+    cfg.heading_command = False
+    cfg.rel_standing_envs = 1.0
+    cfg.rel_heading_envs = 0.0
+    cfg.rel_forward_envs = 0.0
+    cfg.rel_world_envs = 0.0
+    cfg.init_velocity_prob = 0.0
+
+
+@dataclass(kw_only=True)
+class UniformVelocityCommandCfg(_VelocityCommandCfg):
+    """Keep the existing config name while selecting standing from the first reset.
+
+    This overrides the walking defaults supplied by velocity_env.py. Applying it
+    during config creation also covers play mode, which disables reset curricula.
+    """
+
+    def __post_init__(self) -> None:
+        _set_standing_command(self)
+        super().__post_init__()
 
 
 def terrain_levels_vel(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor,
     command_name: str,
-    asset_cfg: SceneEntityCfg = _DEFAULT_SCENE_CFG,
-    promotion_fraction: float = 0.8,
-    min_commanded_distance: float = 1.0,
 ) -> dict[str, torch.Tensor]:
-    """Promote or demote envs by distance walked relative to distance commanded.
-
-    Envs commanded less than min_commanded_distance meters are never promoted, so
-    drift cannot promote an env that was asked to stand still.
-    """
-    asset: Entity = env.scene[asset_cfg.name]
-
+    """Keep the current flat patches without promoting or demoting environments."""
+    del env_ids, command_name
     terrain = env.scene.terrain
     assert terrain is not None
-    terrain_generator = terrain.cfg.terrain_generator
-    assert terrain_generator is not None
-
-    command_term = env.command_manager.get_term(command_name)
-    assert isinstance(command_term, UniformVelocityCommand)
-
-    # Compute the distance the robot walked.
-    distance = torch.norm(
-        asset.data.root_link_pos_w[env_ids, :2]
-        - command_term.episode_start_pos_w[env_ids],
-        dim=1,
-    )
-
-    # Episodes that ended early owe the time left at the current command, so that
-    # falling does not shrink the requirement.
-    time_left = env.max_episode_length_s - env.episode_length_buf[env_ids] * env.step_dt
-    commanded_distance = torch.norm(
-        command_term.commanded_displacement_w[env_ids], dim=1
-    ) + torch.norm(command_term.command[env_ids, :2], dim=1) * time_left.clamp(min=0.0)
-
-    # Robots that walked far enough progress to harder terrains.
-    move_up = distance > torch.clamp(
-        commanded_distance * promotion_fraction, max=terrain_generator.size[0] / 2
-    )
-    move_up &= commanded_distance >= min_commanded_distance
-
-    # Robots that walked less than half of their required distance go to
-    # simpler terrains.
-    move_down = distance < commanded_distance * 0.5
-    move_down &= ~move_up
-
-    # On the initial reset (before any env step) the robot is still at its spawn
-    # pose rather than a walked-to position, so ``distance`` is meaningless and
-    # would spuriously promote every env from level 0 to 1, ignoring
-    # ``max_init_terrain_level``. Freeze levels on that first reset.
-    if env.common_step_counter == 0:
-        move_up = torch.zeros_like(move_up)
-        move_down = torch.zeros_like(move_down)
-
-    # Update terrain levels.
-    terrain.update_env_origins(env_ids, move_up, move_down)
-
-    # Compute per-terrain-type mean levels.
     levels = terrain.terrain_levels.float()
-    result: dict[str, torch.Tensor] = {
-        "mean": torch.mean(levels),
-        "max": torch.max(levels),
-    }
-
-    # In curriculum mode num_cols == num_terrains (one column per type),
-    # so the column index directly maps to the sub-terrain name.
-    sub_terrain_names = list(terrain_generator.sub_terrains.keys())
-    terrain_origins = terrain.terrain_origins
-    assert terrain_origins is not None
-    num_cols = terrain_origins.shape[1]
-    if num_cols == len(sub_terrain_names):
-        types = terrain.terrain_types
-        for i, name in enumerate(sub_terrain_names):
-            mask = types == i
-            if mask.any():
-                result[name] = torch.mean(levels[mask])
-
-    return result
+    return {"mean": levels.mean(), "max": levels.max()}
 
 
 def commands_vel(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor,
     command_name: str,
-    velocity_stages: list[VelocityStage],
+    velocity_stages: list[dict[str, object]],
 ) -> dict[str, torch.Tensor]:
-    del env_ids  # Unused.
-    command_term = env.command_manager.get_term(command_name)
-    assert command_term is not None
-    cfg = cast(UniformVelocityCommandCfg, command_term.cfg)
-    for stage in velocity_stages:
-        if env.common_step_counter >= stage["step"]:
-            if "lin_vel_x" in stage and stage["lin_vel_x"] is not None:
-                cfg.ranges.lin_vel_x = stage["lin_vel_x"]
-            if "lin_vel_y" in stage and stage["lin_vel_y"] is not None:
-                cfg.ranges.lin_vel_y = stage["lin_vel_y"]
-            if "ang_vel_z" in stage and stage["ang_vel_z"] is not None:
-                cfg.ranges.ang_vel_z = stage["ang_vel_z"]
+    """Keep zero velocity commands regardless of training step or old stages."""
+    del env_ids, velocity_stages
+    command = env.command_manager.get_term(command_name)
+    assert isinstance(command, UniformVelocityCommand)
+    _set_standing_command(command.cfg)
+    command.vel_command_b.zero_()
+    command.vel_command_w.zero_()
+    command.is_standing_env.fill_(True)
+    command.is_heading_env.zero_()
+    command.is_forward_env.zero_()
+    command.is_world_env.zero_()
     return {
-        "lin_vel_x_min": torch.tensor(cfg.ranges.lin_vel_x[0]),
-        "lin_vel_x_max": torch.tensor(cfg.ranges.lin_vel_x[1]),
-        "lin_vel_y_min": torch.tensor(cfg.ranges.lin_vel_y[0]),
-        "lin_vel_y_max": torch.tensor(cfg.ranges.lin_vel_y[1]),
-        "ang_vel_z_min": torch.tensor(cfg.ranges.ang_vel_z[0]),
-        "ang_vel_z_max": torch.tensor(cfg.ranges.ang_vel_z[1]),
+        f"{axis}_{bound}": torch.tensor(0.0, device=env.device)
+        for axis in ("lin_vel_x", "lin_vel_y", "ang_vel_z")
+        for bound in ("min", "max")
     }

@@ -29,14 +29,9 @@
    ```bash
    uv run --no-sync train Esra-Velocity-Rough-CCBR-Leo
    ```
-   For a headless GPU training run on AutoDL:
+   For a headless GPU:
    ```bash
    MUJOCO_GL=disable uv run --no-sync train Esra-Velocity-Rough-CCBR-Leo --gpu-ids "[0]" --env.scene.num-envs 4096 --agent.max-iterations 1500 > train.log 2>&1
-   ```
-   For training in China, where W&B access is restricted, use TensorBoard to save metrics locally without W&B login:
-   ```bash
-   MUJOCO_GL=disable uv run --no-sync train Esra-Velocity-Rough-CCBR-Leo --gpu-ids "[0]" --env.scene.num-envs 4096 --agent.max-iterations 1500 --agent.logger tensorboard > train.log 2>&1
-   ```
 - Saved models:
    Checkpoints are saved every 50 iterations and at the end of training:
    ```text
@@ -55,8 +50,6 @@
    ```
 
 `typings/`: Intended for Pylance only; has no effect at runtime.
-
-`QUESTIONS.md`: Questions that need to be asked.
 
 - `src/esra_unified_mjlab_simulator/`
   - `scripts/`
