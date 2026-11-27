@@ -1,9 +1,13 @@
 """CCBR Leo robot velocity environment configurations."""
 
+import math
+
 import mjlab.envs.mdp as mj_mdp
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers import TerminationTermCfg
 from mjlab.managers.event_manager import EventTermCfg
+from mjlab.managers.reward_manager import RewardTermCfg
+from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import (
     ContactMatch,
     ContactSensorCfg,
@@ -19,6 +23,10 @@ from esra_unified_mjlab_simulator.assets.leo_quadruped.leo_constants import (
 )
 from esra_unified_mjlab_simulator.env import mdp
 from esra_unified_mjlab_simulator.env.velocity_env import make_velocity_env_cfg
+
+
+# Temporary standing posture correction. Set False to omit this reward term.
+ENABLE_TEMP_HIP_ROLL_PENALTY = True
 
 
 def make_ccbr_leo_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -141,6 +149,22 @@ def make_ccbr_leo_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         r"^(back|front)_(left|right)_knee_pitch$": 0.6,
     }
     cfg.rewards["pose"].weight = 0.25
+
+    # Temporary hip roll penalty, independent of the existing pose reward.
+    # Allow +/-10 degrees about default; normalize excess by 20 degrees.
+    if ENABLE_TEMP_HIP_ROLL_PENALTY:
+        cfg.rewards["temp_hip_roll_excess"] = RewardTermCfg(
+            func=mdp.hip_roll_excess_l2,
+            weight=-0.5,
+            params={
+                "asset_cfg": SceneEntityCfg(
+                    "robot",
+                    joint_names=(r"^(back|front)_(left|right)_hip_roll$",),
+                ),
+                "threshold": math.radians(10.0),
+                "normalization_angle": math.radians(20.0),
+            },
+        )
 
     cfg.rewards["upright"].params["asset_cfg"].body_names = ("base",)
     cfg.rewards["body_ang_vel"].params["asset_cfg"].body_names = ("base",)

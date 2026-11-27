@@ -37,4 +37,4 @@ Random pushes, rewards, and contact-based termination conditions are managed by 
 
 Solution: 
 
-Train the robot only on flat ground to remain standing while being pushed.
+Train the robot only on flat ground to remain standing while being pushed. Created a new `curriculum.py` and renamed the original to `curriculum_old.py`.

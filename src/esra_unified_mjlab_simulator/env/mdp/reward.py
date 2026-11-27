@@ -23,6 +23,30 @@ if TYPE_CHECKING:
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 
 
+def hip_roll_excess_l2(
+    env: ManagerBasedRlEnv,
+    threshold: float,
+    normalization_angle: float,
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Mean squared excess from default hip roll angles, with a dead zone.
+
+    Angles are in radians. Both positive and negative deviations are penalized.
+    Returns a nonnegative cost; configure a negative reward weight to penalize it.
+    """
+    if threshold < 0.0 or normalization_angle <= 0.0:
+        raise ValueError("threshold must be nonnegative and normalization_angle positive")
+    asset: Entity = env.scene[asset_cfg.name]
+    default_joint_pos = asset.data.default_joint_pos
+    assert default_joint_pos is not None
+    deviation = torch.abs(
+        asset.data.joint_pos[:, asset_cfg.joint_ids]
+        - default_joint_pos[:, asset_cfg.joint_ids]
+    )
+    excess = (deviation - threshold).clamp(min=0.0)
+    return torch.mean(torch.square(excess / normalization_angle), dim=1)
+
+
 def track_linear_velocity(
     env: ManagerBasedRlEnv,
     std: float,
