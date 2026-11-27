@@ -31,7 +31,7 @@
    ```
    For a headless GPU:
    ```bash
-   MUJOCO_GL=disable uv run --no-sync train Esra-Velocity-Rough-CCBR-Leo --gpu-ids "[0]" --env.scene.num-envs 4096 --agent.max-iterations 1500 > train.log 2>&1
+   MUJOCO_GL=disable uv run --no-sync train Esra-Velocity-Rough-CCBR-Leo --gpu-ids "[0]" --env.scene.num-envs 4096 --agent.max-iterations 1500 --agent.load-run "old_run_folder_name" --agent.load-checkpoint "model_1499.pt"> train.log 2>&1
 - Saved models:
    Checkpoints are saved every 50 iterations and at the end of training:
    ```text
@@ -54,3 +54,6 @@
 - `src/esra_unified_mjlab_simulator/`
   - `scripts/`
     - `leo_viewer.py`: View Leo’s body and manually control joint torques or angles. Defaults to **Torque** mode; select **Angle** under **Control** to adjust joint angles.
+
+
+MUJOCO_GL=disable uv run --no-sync train Esra-Velocity-Rough-CCBR-Leo --gpu-ids "[0]" --env.scene.num-envs 4096 --agent.max-iterations 1500 --agent.load-run "2026-11-27_21-27-02" --agent.load-checkpoint "model_1499.pt"> train.log 2>&1

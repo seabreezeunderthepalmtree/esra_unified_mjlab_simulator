@@ -17,9 +17,12 @@ from esra_unified_mjlab_simulator.env.mdp.curriculum import VelocityCurriculumCo
 class VelocityOnPolicyRunner(MjlabOnPolicyRunner):
     env: RslRlVecEnvWrapper
 
+    @torch.inference_mode()
     def _start_collection(
         self, command: VelocityCurriculumCommand, stage: int, *, checking: bool
     ):
+        # Rollouts can replace environment buffers with inference tensors.
+        # Reset them in the same mode when checking/training or stages change.
         command.begin_stage(stage, checking=checking)
         obs, _ = self.env.reset()
         dones = torch.ones(self.env.num_envs, device=self.device, dtype=torch.long)
