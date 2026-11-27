@@ -200,8 +200,8 @@ def make_ccbr_leo_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
         cfg.observations["actor"].enable_corruption = False
 
-        # Keep the same velocity ranges, standing probability, and command
-        # duration as training; manual viewer controls can still override them.
+        # The command owns standing qualification in both training and play.
+        # Manual velocity controls are available after that env qualifies.
 
         cfg.terminations.pop("out_of_terrain_bounds", None)
 

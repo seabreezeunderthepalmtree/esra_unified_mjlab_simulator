@@ -7,11 +7,19 @@ from mjlab.rl.exporter_utils import (
 from mjlab.rl.runner import MjlabOnPolicyRunner
 from rsl_rl.utils import WandbLogWriter
 
+from esra_unified_mjlab_simulator.env.mdp.curriculum import StandingToWalkingCommand
+
 
 class VelocityOnPolicyRunner(MjlabOnPolicyRunner):
     env: RslRlVecEnvWrapper
 
     def save(self, path: str, infos=None):
+        command = self.env.unwrapped.command_manager.get_term("twist")
+        if isinstance(command, StandingToWalkingCommand):
+            infos = {
+                **(infos or {}),
+                "standing_to_walking": command.curriculum_state_dict(),
+            }
         super().save(path, infos)
         policy_dir, filename, onnx_path = self._get_export_paths(path)
         try:
@@ -25,3 +33,17 @@ class VelocityOnPolicyRunner(MjlabOnPolicyRunner):
                 wandb.save(str(onnx_path), base_path=str(policy_dir))
         except Exception as e:
             print(f"[WARN] ONNX export failed (training continues): {e}")
+
+    def load(
+        self,
+        path: str,
+        load_cfg: dict | None = None,
+        strict: bool = True,
+        map_location: str | None = None,
+    ) -> dict:
+        infos = super().load(path, load_cfg, strict, map_location)
+        command = self.env.unwrapped.command_manager.get_term("twist")
+        if isinstance(command, StandingToWalkingCommand):
+            state = infos.get("standing_to_walking") if infos else None
+            command.load_curriculum_state_dict(state)
+        return infos

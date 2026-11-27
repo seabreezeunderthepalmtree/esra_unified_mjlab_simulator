@@ -164,9 +164,8 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
     # Commands
     ##
 
-    commands: dict[str, CommandTermCfg] = {
-        "twist": make_velocity_command_cfg(),
-    }
+    velocity_command_cfg = make_velocity_command_cfg()
+    commands: dict[str, CommandTermCfg] = {"twist": velocity_command_cfg}
 
     ##
     # Curriculum
@@ -369,6 +368,11 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
 
     terminations = {
         "time_out": TerminationTermCfg(func=mj_mdp.time_out, time_out=True),
+        "standing_stage_complete": TerminationTermCfg(
+            func=mdp.standing_stage_complete,
+            time_out=True,
+            params={"command_name": "twist"},
+        ),
         "fell_over": TerminationTermCfg(
             func=mj_mdp.bad_orientation,
             params={"limit_angle": math.radians(70.0)},
@@ -404,7 +408,7 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
             ),
         ),
         decimation=4,
-        episode_length_s=20.0,
+        episode_length_s=velocity_command_cfg.standing_duration_s,
         scene=SceneCfg(
             entities={},  # Set per-robot.
             terrain=make_terrain_cfg(),

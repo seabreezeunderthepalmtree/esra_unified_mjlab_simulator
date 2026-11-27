@@ -40,7 +40,7 @@
 - Run a trained model:
    Replace the checkpoint path with an existing `.pt` file:
    ```bash
-   uv run --no-sync play Esra-Velocity-Rough-CCBR-Leo --checkpoint-file "logs/rsl_rl/ccbr_leo_velocity/<run_timestamp>/model_50.pt" --num-envs 1 --device cpu --viewer viser
+   uv run --no-sync play Esra-Velocity-Rough-CCBR-Leo --num-envs 1 --device cpu --viewer viser --checkpoint-file "logs/rsl_rl/ccbr_leo_velocity/<run_timestamp>/model_50.pt"
    ```
    Open the viewer URL printed in the terminal. On a CUDA machine, use `--device cuda:0` instead.
    The current play configuration sets forward and lateral velocity commands to zero; the turning command is unchanged, so the robot may stand or turn rather than walk forward.
@@ -54,6 +54,3 @@
 - `src/esra_unified_mjlab_simulator/`
   - `scripts/`
     - `leo_viewer.py`: View Leo’s body and manually control joint torques or angles. Defaults to **Torque** mode; select **Angle** under **Control** to adjust joint angles.
-
-
-
