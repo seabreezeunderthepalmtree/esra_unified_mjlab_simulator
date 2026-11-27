@@ -1,62 +1,69 @@
-"""Fixed flat-ground standing curriculum using the existing environment entry points.
+"""Task settings for the current flat-ground walking stage.
 
-The environment already imports this module through ``mdp``. Before a scene is
-built, restrict its shared terrain preset to flat patches and provide a standing
-command configuration under the existing name. The reset callbacks keep these
-settings fixed; the old velocity stages are deliberately unused. Random pushes
-remain entirely under the environment's event configuration.
+Define command ranges, standing probability, command duration, and terrain here.
+Training and play build fresh configurations from the same factories. Command
+sampling and timing are handled by ``command.py`` and mjlab's command manager.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import torch
+from mjlab.terrains import TerrainEntityCfg
 from mjlab.terrains.config import ROUGH_TERRAINS_CFG, flat
 
-from .command import UniformVelocityCommand
-from .command import UniformVelocityCommandCfg as _VelocityCommandCfg
+from .command import UniformVelocityCommandCfg
 
 if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
 
-__all__ = ["UniformVelocityCommandCfg", "commands_vel", "terrain_levels_vel"]
-
-# velocity_env.py copies this shared preset when constructing each environment.
-# Select flat patches before construction, rather than changing an existing scene.
-# One training row also clamps the existing max_init_terrain_level to level zero.
-ROUGH_TERRAINS_CFG.sub_terrains = {"flat": flat(proportion=1.0)}
-ROUGH_TERRAINS_CFG.num_rows = 1
-ROUGH_TERRAINS_CFG.num_cols = 1
+__all__ = [
+    "make_velocity_command_cfg",
+    "make_terrain_cfg",
+    "terrain_levels_vel",
+]
 
 
-def _set_standing_command(cfg: _VelocityCommandCfg) -> None:
-    cfg.ranges = cfg.Ranges(
-        lin_vel_x=(0.0, 0.0),
-        lin_vel_y=(0.0, 0.0),
-        ang_vel_z=(0.0, 0.0),
-        heading=None,
-    )
-    cfg.heading_command = False
-    cfg.rel_standing_envs = 1.0
-    cfg.rel_heading_envs = 0.0
-    cfg.rel_forward_envs = 0.0
-    cfg.rel_world_envs = 0.0
-    cfg.init_velocity_prob = 0.0
+def make_velocity_command_cfg() -> UniformVelocityCommandCfg:
+    """Configure walking or standing independently for each environment.
 
-
-@dataclass(kw_only=True)
-class UniformVelocityCommandCfg(_VelocityCommandCfg):
-    """Keep the existing config name while selecting standing from the first reset.
-
-    This overrides the walking defaults supplied by velocity_env.py. Applying it
-    during config creation also covers play mode, which disables reset curricula.
+    Each resample selects standing with the configured probability; otherwise it
+    samples from the velocity ranges. The command manager uniformly samples a
+    holding time in ``resampling_time_range``. An episode reset may end it early.
     """
+    return UniformVelocityCommandCfg(
+        entity_name="robot",
+        resampling_time_range=(3.0, 8.0),
+        rel_standing_envs=0.2,
+        rel_heading_envs=0.0,
+        rel_forward_envs=0.0,
+        rel_world_envs=0.0,
+        init_velocity_prob=0.0,
+        heading_command=False,
+        debug_vis=True,
+        ranges=UniformVelocityCommandCfg.Ranges(
+            lin_vel_x=(0.3, 0.3),
+            lin_vel_y=(0.0, 0.0),
+            ang_vel_z=(0.0, 0.0),
+            heading=None,
+        ),
+    )
 
-    def __post_init__(self) -> None:
-        _set_standing_command(self)
-        super().__post_init__()
+
+def make_terrain_cfg() -> TerrainEntityCfg:
+    """Create flat terrain without mutating mjlab's shared terrain preset."""
+    return TerrainEntityCfg(
+        terrain_type="generator",
+        terrain_generator=replace(
+            ROUGH_TERRAINS_CFG,
+            sub_terrains={"flat": flat(proportion=1.0)},
+            num_rows=1,
+            num_cols=1,
+        ),
+        max_init_terrain_level=0,
+    )
 
 
 def terrain_levels_vel(
@@ -70,27 +77,3 @@ def terrain_levels_vel(
     assert terrain is not None
     levels = terrain.terrain_levels.float()
     return {"mean": levels.mean(), "max": levels.max()}
-
-
-def commands_vel(
-    env: ManagerBasedRlEnv,
-    env_ids: torch.Tensor,
-    command_name: str,
-    velocity_stages: list[dict[str, object]],
-) -> dict[str, torch.Tensor]:
-    """Keep zero velocity commands regardless of training step or old stages."""
-    del env_ids, velocity_stages
-    command = env.command_manager.get_term(command_name)
-    assert isinstance(command, UniformVelocityCommand)
-    _set_standing_command(command.cfg)
-    command.vel_command_b.zero_()
-    command.vel_command_w.zero_()
-    command.is_standing_env.fill_(True)
-    command.is_heading_env.zero_()
-    command.is_forward_env.zero_()
-    command.is_world_env.zero_()
-    return {
-        f"{axis}_{bound}": torch.tensor(0.0, device=env.device)
-        for axis in ("lin_vel_x", "lin_vel_y", "ang_vel_z")
-        for bound in ("min", "max")
-    }

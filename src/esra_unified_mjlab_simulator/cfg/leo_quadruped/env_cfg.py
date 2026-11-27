@@ -200,11 +200,8 @@ def make_ccbr_leo_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
         cfg.observations["actor"].enable_corruption = False
 
-        assert cfg.commands is not None
-        assert type(cfg.commands["twist"]) is mdp.UniformVelocityCommandCfg
-        cfg.commands["twist"].ranges.lin_vel_x = (-0.0, 0.0)
-        cfg.commands["twist"].ranges.lin_vel_y = (-0.0, 0.0)
-        cfg.commands["twist"].resampling_time_range = (1.0, 3.0)
+        # Keep the same velocity ranges, standing probability, and command
+        # duration as training; manual viewer controls can still override them.
 
         cfg.terminations.pop("out_of_terrain_bounds", None)
 

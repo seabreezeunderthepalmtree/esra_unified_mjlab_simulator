@@ -13,6 +13,7 @@ Problem:
 Possible reasons:
 
 Curriculum is too hard!
+
 **1. Terrain Difficulty**
 
 - Adjusted features: stair height, uphill and downhill slope steepness, height variations on rough terrain, and wave amplitude; flat terrain remains flat.

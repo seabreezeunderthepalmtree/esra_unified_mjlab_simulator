@@ -169,12 +169,12 @@ LEO_ARTICULATION = EntityArticulationInfoCfg(
         LEO_HIP_ACTUATOR_CFG,
         LEO_KNEE_ACTUATOR_CFG,
     ),
-    soft_joint_pos_limit_factor=0.9,
+    soft_joint_pos_limit_factor=0.75,
 )
 
 LEO_ARTICULATION_LEARNED = EntityArticulationInfoCfg(
     actuators=(LEO_LEARNED_ACTUATOR_CFG,),
-    soft_joint_pos_limit_factor=0.9,
+    soft_joint_pos_limit_factor=0.75,
 )
 
 

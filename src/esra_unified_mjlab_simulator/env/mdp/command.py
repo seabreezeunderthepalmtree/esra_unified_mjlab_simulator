@@ -34,6 +34,8 @@ class UniformVelocityCommand(CommandTerm):
 
         self.vel_command_b = torch.zeros(self.num_envs, 3, device=self.device)
         self.vel_command_w = torch.zeros(self.num_envs, 3, device=self.device)
+        # Preserve automatic commands while the viewer applies manual overrides.
+        self._sampled_vel_command_b = torch.zeros_like(self.vel_command_b)
         self.heading_target = torch.zeros(self.num_envs, device=self.device)
         self.heading_error = torch.zeros(self.num_envs, device=self.device)
         self.is_heading_env = torch.zeros(
@@ -102,11 +104,11 @@ class UniformVelocityCommand(CommandTerm):
         self.is_forward_env[env_ids] = r.uniform_(0.0, 1.0) <= self.cfg.rel_forward_envs
         fwd_ids = env_ids[self.is_forward_env[env_ids]]
         if len(fwd_ids) > 0:
-            self.vel_command_b[fwd_ids, 0] = (
-                self.vel_command_b[fwd_ids, 0].abs().clamp(min=0.3)
-            )
+            self.vel_command_b[fwd_ids, 0] = self.vel_command_b[fwd_ids, 0].abs()
             self.vel_command_b[fwd_ids, 1] = 0.0
             self.vel_command_b[fwd_ids, 2] = 0.0
+
+        self._sampled_vel_command_b[env_ids] = self.vel_command_b[env_ids]
 
     def _integrate_command(
         self, dt: float | torch.Tensor, env_ids: torch.Tensor | None
@@ -139,6 +141,9 @@ class UniformVelocityCommand(CommandTerm):
     def _update_command(self, env_ids: torch.Tensor | None = None) -> None:
         # Pure function of the current state; refreshing all envs is safe.
         del env_ids
+        # Rebuild from the sampled command so disabling manual control (or
+        # selecting another env) restores automatic commands on the next update.
+        self.vel_command_b[:] = self._sampled_vel_command_b
         if self.cfg.heading_command:
             self.heading_error = wrap_to_pi(
                 self.heading_target - self.robot.data.heading_w

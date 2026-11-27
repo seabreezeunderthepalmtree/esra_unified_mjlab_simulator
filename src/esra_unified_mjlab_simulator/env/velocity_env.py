@@ -1,11 +1,11 @@
 """Velocity task configuration.
 
 This module provides a factory function to create a base velocity task config.
-Robot-specific configurations call the factory and customize as needed.
+Task command and terrain settings come from ``mdp.curriculum``. Robot-specific
+configurations call this factory and customize the robot and its sensors.
 """
 
 import math
-from dataclasses import replace
 
 import mjlab.envs.mdp as mj_mdp
 from mjlab.envs import ManagerBasedRlEnvCfg
@@ -26,12 +26,11 @@ from mjlab.sensor import (
     TerrainHeightSensorCfg,
 )
 from mjlab.sim import MujocoCfg, SimulationCfg
-from mjlab.terrains import TerrainEntityCfg
-from mjlab.terrains.config import ROUGH_TERRAINS_CFG
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
 from . import mdp as mdp
+from .mdp.curriculum import make_terrain_cfg, make_velocity_command_cfg
 
 
 def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
@@ -166,22 +165,7 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
     ##
 
     commands: dict[str, CommandTermCfg] = {
-        "twist": mdp.UniformVelocityCommandCfg(
-            entity_name="robot",
-            resampling_time_range=(3.0, 8.0),
-            rel_standing_envs=0.1,
-            rel_heading_envs=0.3,
-            rel_forward_envs=0.2,
-            heading_command=True,
-            heading_control_stiffness=0.5,
-            debug_vis=True,
-            ranges=mdp.UniformVelocityCommandCfg.Ranges(
-                lin_vel_x=(-1.0, 1.0),
-                lin_vel_y=(-1.0, 1.0),
-                ang_vel_z=(-0.5, 0.5),
-                heading=(-math.pi, math.pi),
-            ),
-        )
+        "twist": make_velocity_command_cfg(),
     }
 
     ##
@@ -192,21 +176,6 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
         "terrain_levels": CurriculumTermCfg(
             func=mdp.terrain_levels_vel,
             params={"command_name": "twist"},
-        ),
-        "command_vel": CurriculumTermCfg(
-            func=mdp.commands_vel,
-            params={
-                "command_name": "twist",
-                "velocity_stages": [
-                    {"step": 0, "lin_vel_x": (-1.0, 1.0), "ang_vel_z": (-0.5, 0.5)},
-                    {
-                        "step": 5000 * 24,
-                        "lin_vel_x": (-1.5, 2.0),
-                        "ang_vel_z": (-0.7, 0.7),
-                    },
-                    {"step": 10000 * 24, "lin_vel_x": (-2.0, 3.0)},
-                ],
-            },
         ),
     }
 
@@ -438,11 +407,7 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
         episode_length_s=20.0,
         scene=SceneCfg(
             entities={},  # Set per-robot.
-            terrain=TerrainEntityCfg(
-                terrain_type="generator",
-                terrain_generator=replace(ROUGH_TERRAINS_CFG),
-                max_init_terrain_level=5,
-            ),
+            terrain=make_terrain_cfg(),
             sensors=(terrain_scan, foot_height_scan),
             num_envs=1,
             extent=2.0,
