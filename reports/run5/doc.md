@@ -1,32 +1,32 @@
-# Run 5：三阶段平地走路
+# Run 5: Three-Stage Flat-Ground Walking
 
-## 阶段
+## Stages
 
-| 阶段 | 指令 | 通过条件 |
+| Stage | Commands | Passing criteria |
 |---|---|---|
-| 1：站立 | 零速度 | 最近 10 回合全部存活 |
-| 2：固定速度走停 | 80% 以 0.3 m/s 前进，20% 停止 | 全部存活，且 10 回合平均速度误差 <5% |
-| 3：随机速度走停 | 70% 从 0.3–1 m/s 均匀抽取，30% 停止 | 同第二阶段；通过后保存并结束训练 |
+| 1: Standing | Zero velocity | All of the latest 10 episodes survive |
+| 2: Fixed-speed walking and stopping | 80% forward at 0.3 m/s, 20% stop | All 10 episodes survive, with mean velocity error <5% |
+| 3: Random-speed walking and stopping | 70% forward speed sampled uniformly from 0.3–1 m/s, 30% stop | Same as Stage 2; save the model and end training when passed |
 
-全程平地，每回合 20 秒，侧向和转向指令为零。每条指令保持 3–8 秒，均匀随机，允许连续抽到相同指令。
+Use flat ground throughout, with 20-second episodes and zero lateral and turning commands. Each command lasts for a duration sampled uniformly from 3–8 seconds. Consecutive samples may produce the same command.
 
-## 流程
+## Workflow
 
-新模型或已有模型都从第一阶段检查，保留当前参数。每阶段先固定模型跑 10 回合；通过就检查下一阶段，未通过就训练。训练中最近 10 回合达标便晋级，不额外验收。
+Both new and existing models are checked from Stage 1, keeping their current parameters. At each stage, first run 10 episodes with the model frozen. If they pass, check the next stage; otherwise, train the current stage. During training, advance as soon as the latest 10 episodes meet the criteria, without an additional evaluation.
 
-10 回合按所有并行环境合计，失败回合也计入。同一步完成的回合按环境编号排序，多 GPU 时先按 rank 排序。晋级时重置所有环境并清空统计；达到最大迭代数则保存当前模型。Reward、Loss 不参与晋级。
+Count episodes across all parallel environments, including failures. Episodes ending on the same step are ordered by environment index; with multiple GPUs, order by rank first. Reset all environments and clear statistics when advancing. Save the current model if the iteration limit is reached. Reward and Loss do not determine progression.
 
-## 误差
+## Velocity Error
 
-    e(t) = norm(实际平面速度 - 目标平面速度) / max(norm(目标平面速度), 0.3 m/s)
+    e(t) = norm(actual planar velocity - target planar velocity) / max(norm(target planar velocity), 0.3 m/s)
 
-先对每回合全部控制步求平均，再平均最近 10 回合。包括起步、减速和侧向误差；停止时用 0.3 m/s 作分母。要求窗口平均值 <0.05，不要求每回合单独达标。第一阶段只检查生存。
+Average over all control steps within each episode, then average the latest 10 episode means. Include starting, slowing down, and lateral errors. For stop commands, use 0.3 m/s as the denominator. The window mean must be <0.05; individual episodes do not each need to meet this threshold. Stage 1 checks survival only.
 
-## 文件修改
+## File Changes
 
-- **env/mdp/curriculum.py**：新增 VelocityStageCfg；用 VelocityCurriculumCommand / Cfg 替换原来的 StandingToWalkingCommand / Cfg。make_velocity_command_cfg() 集中定义全部参数；begin_stage() 切换阶段，record_step() / reset() 统计回合，record_results() 判断通过，curriculum_episode_complete() 控制回合时长。继续复用 command.py 的采样器。
-- **runner/velocity_runner.py**：learn() 实现检查与训练循环；_check_stage() 固定模型检查，_collect_results() 汇总回合。save() / load() 保存阶段并兼容旧 checkpoint。训练启动时重新检查，play 使用保存的阶段。
-- **env/velocity_env.py**：接入新终止回调，引用统一的回合时长。
-- **cfg/leo_quadruped/env_cfg.py、README.md**：更新 play 使用 checkpoint 阶段的说明。
+- **env/mdp/curriculum.py**: Adds `VelocityStageCfg` and replaces `StandingToWalkingCommand` / `StandingToWalkingCommandCfg` with `VelocityCurriculumCommand` / `VelocityCurriculumCommandCfg`. `make_velocity_command_cfg()` defines all settings; `begin_stage()` switches stages, `record_step()` / `reset()` collect episode results, `record_results()` checks acceptance, and `curriculum_episode_complete()` controls episode duration. Reuses the sampler in `command.py`.
+- **runner/velocity_runner.py**: `learn()` implements the check/train loop; `_check_stage()` checks the frozen model, and `_collect_results()` aggregates episodes. `save()` / `load()` persist the stage and support older checkpoints. Training rechecks from Stage 1; play uses the saved stage.
+- **env/velocity_env.py**: Connects the new termination callback and uses the shared episode duration.
+- **cfg/leo_quadruped/env_cfg.py, README.md**: Update the explanation of how play uses the checkpoint stage.
 
-参数只在 curriculum.py 定义；command.py 和 PPO 超参数未修改。日志使用 Curriculum/velocity/ 下的阶段、窗口回合数、生存率、平均误差和通过状态。
+Settings are defined only in `curriculum.py`; `command.py` and PPO hyperparameters are unchanged. Metrics under `Curriculum/velocity/` report the stage, window episode count, survival rate, mean error, and passing status.
