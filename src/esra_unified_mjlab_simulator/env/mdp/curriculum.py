@@ -1,13 +1,13 @@
-"""Flat-ground standing qualification followed by walking and standing.
+"""Flat-ground stage settings, command sampling, and episode acceptance.
 
-Task settings and per-environment stage progression live here. Generic velocity
-sampling remains in ``command.py``; timing uses mjlab's command manager. Training
-and play share this curriculum, including the standing qualification stage.
+The runner decides when to check or train. All task values and acceptance rules
+live here; command.py remains a generic velocity command implementation.
 """
 
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
@@ -21,150 +21,225 @@ if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
 
 __all__ = [
-    "StandingToWalkingCommand",
-    "StandingToWalkingCommandCfg",
+    "VelocityStageCfg",
+    "VelocityCurriculumCommand",
+    "VelocityCurriculumCommandCfg",
     "make_velocity_command_cfg",
     "make_terrain_cfg",
-    "standing_stage_complete",
+    "curriculum_episode_complete",
     "terrain_levels_vel",
 ]
 
 
-class StandingToWalkingCommand(UniformVelocityCommand):
-    """Promote each environment after consecutive full standing episodes."""
+@dataclass(frozen=True, kw_only=True)
+class VelocityStageCfg:
+    lin_vel_x: tuple[float, float]
+    standing_probability: float
+    require_tracking: bool
 
-    cfg: StandingToWalkingCommandCfg
 
-    def __init__(self, cfg: StandingToWalkingCommandCfg, env: ManagerBasedRlEnv):
+class VelocityCurriculumCommand(UniformVelocityCommand):
+    """One model-wide stage and a window of completed episodes across all envs."""
+
+    cfg: VelocityCurriculumCommandCfg
+
+    def __init__(self, cfg: VelocityCurriculumCommandCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
-        self.standing_successes = torch.zeros(
-            self.num_envs, dtype=torch.long, device=self.device
+        self.stage = 1
+        self.checking = True
+        self.recording = False
+        self.passed = False
+        self.completed = False
+        self._window: deque[tuple[bool, float]] = deque(maxlen=cfg.acceptance_episodes)
+        self._pending_results: list[tuple[bool, float]] = []
+        self._episode_steps = math.ceil(cfg.episode_duration_s / env.step_dt)
+        self._episode_start_step = torch.full(
+            (self.num_envs,), env.common_step_counter, dtype=torch.long, device=self.device
         )
-        self._episode_start_step = torch.full_like(
-            self.standing_successes, env.common_step_counter
-        )
-        self._standing_episode_steps = math.ceil(cfg.standing_duration_s / env.step_dt)
+        self._error_sum = torch.zeros(self.num_envs, device=self.device)
+        self._sample_count = torch.zeros_like(self._episode_start_step)
+        self._last_record_step = env.common_step_counter
+        self._apply_stage_cfg()
 
     @property
-    def walking_enabled(self) -> torch.Tensor:
-        return self.standing_successes >= self.cfg.required_standing_successes
+    def stage_cfg(self) -> VelocityStageCfg:
+        return self.cfg.stages[self.stage - 1]
 
     @property
-    def standing_episode_complete(self) -> torch.Tensor:
-        # The runner randomizes episode_length_buf at startup. Count real steps
-        # since reset instead, so a shortened first episode cannot earn success.
-        elapsed_steps = self._env.common_step_counter - self._episode_start_step
-        return ~self.walking_enabled & (elapsed_steps >= self._standing_episode_steps)
+    def check_finished(self) -> bool:
+        return len(self._window) == self.cfg.acceptance_episodes
 
-    def _apply_standing_stage(self, env_ids: torch.Tensor | None = None) -> None:
-        if env_ids is None:
-            env_ids = (~self.walking_enabled).nonzero(as_tuple=False).flatten()
-        else:
-            env_ids = env_ids[~self.walking_enabled[env_ids]]
-        self.vel_command_b[env_ids] = 0.0
-        self.vel_command_w[env_ids] = 0.0
-        self._sampled_vel_command_b[env_ids] = 0.0
-        self.is_standing_env[env_ids] = True
-        self.is_heading_env[env_ids] = False
-        self.is_world_env[env_ids] = False
-        self.is_forward_env[env_ids] = False
+    @property
+    def mean_error(self) -> float:
+        return sum(error for _, error in self._window) / max(len(self._window), 1)
 
-    def _resample_command(self, env_ids: torch.Tensor) -> None:
-        super()._resample_command(env_ids)
-        self._apply_standing_stage(env_ids)
+    def _apply_stage_cfg(self) -> None:
+        # Select a profile here; the inherited sampler still draws each command
+        # and standing flag exactly once using the active generic config.
+        self.cfg.ranges = replace(self.cfg.ranges, lin_vel_x=self.stage_cfg.lin_vel_x)
+        self.cfg.rel_standing_envs = self.stage_cfg.standing_probability
+
+    def begin_stage(self, stage: int, *, checking: bool) -> None:
+        """Clear old results before the runner resets every environment."""
+        if not 1 <= stage <= len(self.cfg.stages):
+            raise ValueError(f"Invalid velocity curriculum stage: {stage}")
+        self.stage = stage
+        self._apply_stage_cfg()
+        self.checking = checking
+        self.recording = False
+        self.passed = False
+        self.completed = False
+        self._window.clear()
+        self._pending_results.clear()
+        self._error_sum.zero_()
+        self._sample_count.zero_()
+        self._episode_start_step.fill_(self._env.common_step_counter)
+        self._last_record_step = self._env.common_step_counter
+
+    def record_step(self) -> torch.Tensor:
+        """Measure the held command before termination resets the physical state."""
+        step = self._env.common_step_counter
+        if self.recording and step != self._last_record_step:
+            target = self.vel_command_b[:, :2]
+            reference = target.norm(dim=-1).clamp_min(self.cfg.error_reference_speed)
+            error = (self.robot.data.root_link_lin_vel_b[:, :2] - target).norm(dim=-1)
+            self._error_sum += error / reference
+            self._sample_count += 1
+        self._last_record_step = step
+        return (step - self._episode_start_step) >= self._episode_steps
 
     def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
         assert isinstance(env_ids, torch.Tensor)
-        standing_ids = env_ids[~self.walking_enabled[env_ids]]
-        completed = self.standing_episode_complete[standing_ids]
-        failed = self._env.termination_manager.terminated[standing_ids].clone()
-        if "out_of_terrain_bounds" in self._env.termination_manager.active_terms:
-            failed |= self._env.termination_manager.get_term(
-                "out_of_terrain_bounds"
-            )[standing_ids]
-        streak = self.standing_successes[standing_ids]
-        next_streak = torch.where(completed & ~failed, streak + 1, 0)
-        # The runner's randomized first timeout is neither a full success nor a
-        # physical failure. Ignore it, including after restoring a partial streak.
-        if "time_out" in self._env.termination_manager.active_terms:
-            shortened_timeout = (
-                ~completed
-                & ~failed
-                & self._env.termination_manager.get_term("time_out")[standing_ids]
-            )
-            next_streak = torch.where(shortened_timeout, streak, next_streak)
-        self.standing_successes[standing_ids] = next_streak
+        if self.recording:
+            # Terminal errors were measured by record_step(), before sim.reset().
+            ids = env_ids[self._sample_count[env_ids] > 0].sort().values
+            elapsed = self._env.common_step_counter - self._episode_start_step[ids]
+            failed = self._env.termination_manager.terminated[ids].clone()
+            if "out_of_terrain_bounds" in self._env.termination_manager.active_terms:
+                failed |= self._env.termination_manager.get_term("out_of_terrain_bounds")[ids]
+            survived = (elapsed >= self._episode_steps) & ~failed
+            errors = self._error_sum[ids] / self._sample_count[ids]
+            self._pending_results.extend(zip(survived.tolist(), errors.tolist(), strict=True))
+        self._error_sum[env_ids] = 0.0
+        self._sample_count[env_ids] = 0
         self._episode_start_step[env_ids] = self._env.common_step_counter
-        # Promotion happens before the base reset samples the next command.
         return super().reset(env_ids)
+
+    def pop_episode_results(self) -> list[tuple[bool, float]]:
+        results, self._pending_results = self._pending_results, []
+        return results
+
+    def record_results(self, results: list[tuple[bool, float]]) -> None:
+        """Check the first window in check mode, or each rolling window in training."""
+        for result in results:
+            if self.passed or (self.checking and self.check_finished):
+                break
+            self._window.append(result)
+            if self.check_finished:
+                self.passed = all(survived for survived, _ in self._window) and (
+                    not self.stage_cfg.require_tracking
+                    or self.mean_error < self.cfg.max_mean_velocity_error
+                )
+
+    def progress_metrics(self) -> dict[str, float]:
+        count = len(self._window)
+        return {
+            "Curriculum/velocity/stage": float(self.stage),
+            "Curriculum/velocity/checking": float(self.checking),
+            "Curriculum/velocity/window_episodes": float(count),
+            "Curriculum/velocity/survival_rate": (
+                sum(survived for survived, _ in self._window) / max(count, 1)
+            ),
+            "Curriculum/velocity/mean_relative_error": self.mean_error,
+            "Curriculum/velocity/passed": float(self.passed),
+            "Curriculum/velocity/completed": float(self.completed),
+        }
 
     def compute(
         self, dt: float | torch.Tensor, env_ids: torch.Tensor | None = None
     ) -> None:
         super().compute(dt, env_ids)
-        # Manual controls become available after standing qualification, so a
-        # nonzero manual command cannot count as a successful standing episode.
-        self._apply_standing_stage()
-        log = self._env.extras.setdefault("log", {})
-        log["Curriculum/standing_to_walking/walking_fraction"] = (
-            self.walking_enabled.float().mean()
-        )
-        log["Curriculum/standing_to_walking/success_streak_mean"] = (
-            self.standing_successes.float().mean()
-        )
+        if self.stage == 1:
+            # Viewer controls must not turn standing qualification into walking.
+            self.vel_command_b.zero_()
+            self.vel_command_w.zero_()
+        self._env.extras.setdefault("log", {}).update(self.progress_metrics())
 
-    def curriculum_state_dict(self) -> dict[str, torch.Tensor]:
-        return {"standing_successes": self.standing_successes.detach().cpu().clone()}
+    def curriculum_state_dict(self) -> dict[str, int | bool]:
+        # A resumed learn() always checks from Stage 1. Save the current stage for
+        # play; unfinished physical episodes/windows are not transferable state.
+        return {"stage": self.stage, "completed": self.completed}
 
-    def load_curriculum_state_dict(
-        self, state: dict[str, torch.Tensor] | None
-    ) -> None:
-        self.standing_successes.zero_()
+    def load_curriculum_state_dict(self, state: dict | None) -> None:
+        stage = 1
         if state is not None:
-            successes = state["standing_successes"].to(
-                device=self.device, dtype=torch.long
-            ).flatten()
-            # Restore matching env indices; extra new envs start with standing.
-            count = min(self.num_envs, successes.numel())
-            self.standing_successes[:count] = successes[:count].clamp(
-                min=0, max=self.cfg.required_standing_successes
-            )
-        # Checkpoints restore policy and curriculum progress, not physical episode
-        # state. Start a fresh qualification timer at the restored global step.
-        self._episode_start_step.fill_(self._env.common_step_counter)
+            if "stage" in state:
+                stage = int(state["stage"])
+            elif "standing_successes" in state:
+                # Older checkpoints only knew standing -> fixed-speed walking.
+                successes = torch.as_tensor(state["standing_successes"])
+                if successes.numel() and successes.max().item() >= self.cfg.acceptance_episodes:
+                    stage = 2
+        self.begin_stage(stage, checking=True)
+        self.completed = bool(state.get("completed", False)) if state else False
         env_ids = torch.arange(self.num_envs, device=self.device)
         self._resample(env_ids)
         self._update_command(env_ids)
 
 
 @dataclass(kw_only=True)
-class StandingToWalkingCommandCfg(UniformVelocityCommandCfg):
-    """Explicit stage settings; the generic command config is not replaced."""
+class VelocityCurriculumCommandCfg(UniformVelocityCommandCfg):
+    episode_duration_s: float
+    acceptance_episodes: int
+    max_mean_velocity_error: float
+    error_reference_speed: float
+    stages: tuple[VelocityStageCfg, ...]
 
-    standing_duration_s: float
-    required_standing_successes: int
-
-    def build(self, env: ManagerBasedRlEnv) -> StandingToWalkingCommand:
-        return StandingToWalkingCommand(self, env)
+    def build(self, env: ManagerBasedRlEnv) -> VelocityCurriculumCommand:
+        return VelocityCurriculumCommand(self, env)
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if self.standing_duration_s <= 0.0 or self.required_standing_successes < 1:
-            raise ValueError("Standing duration and required successes must be positive")
+        if self.episode_duration_s <= 0 or self.acceptance_episodes < 1:
+            raise ValueError("Episode duration and acceptance window must be positive")
+        if self.error_reference_speed <= 0 or self.max_mean_velocity_error <= 0:
+            raise ValueError("Error reference speed and threshold must be positive")
+        if not self.stages:
+            raise ValueError("At least one velocity curriculum stage is required")
+        for stage in self.stages:
+            if not 0 <= stage.standing_probability <= 1:
+                raise ValueError("Standing probability must be in [0, 1]")
+            if not 0 <= stage.lin_vel_x[0] <= stage.lin_vel_x[1]:
+                raise ValueError("Forward speed range must be ordered and nonnegative")
 
 
-def make_velocity_command_cfg() -> StandingToWalkingCommandCfg:
-    """Configure qualification and the subsequent walking/standing commands.
-
-    Only qualified envs use the walking ranges and standing probability. Each
-    command holding time is sampled uniformly by mjlab's command manager.
-    """
-    return StandingToWalkingCommandCfg(
+def make_velocity_command_cfg() -> VelocityCurriculumCommandCfg:
+    """The single source for all three stages and their common acceptance rule."""
+    walking_speed = 0.3
+    stages = (
+        VelocityStageCfg(
+            lin_vel_x=(0.0, 0.0), standing_probability=1.0, require_tracking=False
+        ),
+        VelocityStageCfg(
+            lin_vel_x=(walking_speed, walking_speed),
+            standing_probability=0.2,
+            require_tracking=True,
+        ),
+        VelocityStageCfg(
+            lin_vel_x=(walking_speed, 1.0),
+            standing_probability=0.3,
+            require_tracking=True,
+        ),
+    )
+    return VelocityCurriculumCommandCfg(
         entity_name="robot",
-        standing_duration_s=20.0,
-        required_standing_successes=10,
+        episode_duration_s=20.0,
+        acceptance_episodes=10,
+        max_mean_velocity_error=0.05,
+        error_reference_speed=walking_speed,
+        stages=stages,
         resampling_time_range=(3.0, 8.0),
-        rel_standing_envs=0.2,
+        rel_standing_envs=stages[-1].standing_probability,
         rel_heading_envs=0.0,
         rel_forward_envs=0.0,
         rel_world_envs=0.0,
@@ -172,7 +247,7 @@ def make_velocity_command_cfg() -> StandingToWalkingCommandCfg:
         heading_command=False,
         debug_vis=True,
         ranges=UniformVelocityCommandCfg.Ranges(
-            lin_vel_x=(0.3, 0.3),
+            lin_vel_x=stages[-1].lin_vel_x,
             lin_vel_y=(0.0, 0.0),
             ang_vel_z=(0.0, 0.0),
             heading=None,
@@ -180,13 +255,13 @@ def make_velocity_command_cfg() -> StandingToWalkingCommandCfg:
     )
 
 
-def standing_stage_complete(
+def curriculum_episode_complete(
     env: ManagerBasedRlEnv, command_name: str
 ) -> torch.Tensor:
-    """End a full qualification episode as a timeout in both training and play."""
+    """Record the terminal sample and end a full episode in every stage."""
     command = env.command_manager.get_term(command_name)
-    assert isinstance(command, StandingToWalkingCommand)
-    return command.standing_episode_complete
+    assert isinstance(command, VelocityCurriculumCommand)
+    return command.record_step()
 
 
 def make_terrain_cfg() -> TerrainEntityCfg:

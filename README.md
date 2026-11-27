@@ -43,7 +43,7 @@
    uv run --no-sync play Esra-Velocity-Rough-CCBR-Leo --num-envs 1 --device cpu --viewer viser --checkpoint-file "logs/rsl_rl/ccbr_leo_velocity/<run_timestamp>/model_50.pt"
    ```
    Open the viewer URL printed in the terminal. On a CUDA machine, use `--device cuda:0` instead.
-   The current play configuration sets forward and lateral velocity commands to zero; the turning command is unchanged, so the robot may stand or turn rather than walk forward.
+   Play uses the curriculum stage saved in the checkpoint: standing, 0.3 m/s walking/stopping, or 0.3–1.0 m/s walking/stopping. Training always checks from Stage 1 before deciding which stage needs further training. See [Run 5](reports/run5/doc.md) for the shared rules.
 - Add a new dependency:
    ```
    uv add <package-name>

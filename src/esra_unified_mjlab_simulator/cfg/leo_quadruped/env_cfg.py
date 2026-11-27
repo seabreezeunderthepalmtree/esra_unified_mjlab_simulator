@@ -195,13 +195,13 @@ def make_ccbr_leo_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # Apply play mode overrides
     ##
     if play:
-        # Effectively infinite episode length.
+        # The curriculum command supplies the shared episode timeout in play.
         cfg.episode_length_s = int(1e9)
 
         cfg.observations["actor"].enable_corruption = False
 
-        # The command owns standing qualification in both training and play.
-        # Manual velocity controls are available after that env qualifies.
+        # Play uses the checkpoint's stage and the same command sampler as training.
+        # Stage 1 keeps zero commands; the training runner owns stage progression.
 
         cfg.terminations.pop("out_of_terrain_bounds", None)
 
