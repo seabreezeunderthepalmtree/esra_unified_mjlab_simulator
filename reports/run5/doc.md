@@ -29,6 +29,10 @@ New and resumed runs default to Stage 1. Add `--agent.start-stage 2` or `--agent
 
 The repository-root file `alert` receives one English message per stage transition, including the stage, iteration, window means/changes, and full checkpoint path. Snapshots are saved as `stage_<stage>_stable_model_<iteration>.pt` in the new run directory. Training continues without waiting for review. The alert file is local to the training machine; it does not automatically message this chat.
 
+## Interactive Inspection
+
+Run `uv run --no-sync python src/esra_unified_mjlab_simulator/scripts/leo_policy_viewer.py --checkpoint-file "/path/to/model.pt"`. The browser provides random/manual commands, a random-push toggle, and forward/backward/left/right kick buttons. Random commands automatically use the training profile associated with the checkpoint. It reuses training noise, push settings, and episode resets in one environment without training. See the README for controls.
+
 ## File Changes
 
 - **env/mdp/curriculum.py**: Adds `StageStability`; removes episode acceptance and velocity-error gates. `make_velocity_command_cfg()` centrally defines the three command profiles, 50-iteration windows, 5% threshold, and numerical floor. The existing sampler and episode timeout are retained.
@@ -36,5 +40,6 @@ The repository-root file `alert` receives one English message per stage transiti
 - **runner/velocity_runner.py**: Starts training at the selected stage and advances on stability. Saves stage snapshots and appends their paths to `alert`. Retains the inference-mode reset fix and old checkpoint compatibility.
 - **alert**: New root-level notification file.
 - **README.md**: Documents the starting-stage option, progression, and checkpoint/alert instructions.
+- **scripts/leo_policy_viewer.py**: Adds `ViewerVelocityCommand` / `ViewerVelocityCommandCfg` for browser command control, `PushControls` / `install_push_controls()` for gated training pushes and queued manual kicks, and `LeoPolicyViewer` for playback and readouts. Training settings remain in their existing configuration files.
 
 Reward functions, disturbances, `command.py`, and PPO hyperparameters are unchanged. `Curriculum/velocity/` logs the stage, stage iteration count, window means, relative changes, stability, and completion. No commands, tests, or training were run; validation was limited to static inspection.

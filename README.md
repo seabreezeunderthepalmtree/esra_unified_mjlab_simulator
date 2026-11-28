@@ -39,7 +39,7 @@
    MUJOCO_GL=disable uv run --no-sync train Esra-Velocity-Rough-CCBR-Leo --gpu-ids "[0]" --env.scene.num-envs 4096 --agent.max-iterations 1500 --agent.resume True --agent.load-run "2026-11-27_21-27-02" --agent.load-checkpoint "model_1499.pt" > train.log 2>&1
    ```
 
-   Add `--agent.start-stage 2(1-index, default 1)` to training command to start at that stage and skip earlier stages.
+   Add `--agent.start-stage 2 (1-index, default 1)` to training command to start at that stage and skip earlier stages.
 
 - Saved models:
    Checkpoints are saved every 50 iterations and at the end of training:
@@ -47,13 +47,12 @@
    logs/rsl_rl/ccbr_leo_velocity/<run_timestamp>/model_<iteration>.pt
    ```
    Each stable stage also saves `stage_<stage>_stable_model_<iteration>.pt` in the same run directory and appends its full path and stability results to the repository-root `alert` file. Stage transitions happen automatically without waiting for review.
+
 - Run a trained model:
-   Replace the checkpoint path with an existing `.pt` file:
    ```bash
-   uv run --no-sync play Esra-Velocity-Rough-CCBR-Leo --num-envs 1 --device cpu --viewer viser --checkpoint-file "logs/rsl_rl/ccbr_leo_velocity/<run_timestamp>/model_50.pt"
+   uv run --no-sync python src/esra_unified_mjlab_simulator/scripts/leo_policy_viewer.py --checkpoint-file "/path/to/model.pt"
    ```
-   Open the viewer URL printed in the terminal. On a CUDA machine, use `--device cuda:0` instead.
-   Play uses the curriculum stage saved in the checkpoint: standing, 0.3 m/s walking/stopping, or 0.3–1.0 m/s walking/stopping. Training advances when both mean reward and mean value loss change by less than 5% between consecutive 50-iteration windows. Existing disturbances remain enabled. See [Run 5](reports/run5/doc.md) for the shared rules.
+
 - Add a new dependency:
    ```
    uv add <package-name>
@@ -64,5 +63,6 @@
 - `src/esra_unified_mjlab_simulator/`
   - `scripts/`
     - `leo_viewer.py`: View Leo’s body and manually control joint torques or angles. Defaults to **Torque** mode; select **Angle** under **Control** to adjust joint angles.
+    - `leo_policy_viewer.py`: Load a policy checkpoint and inspect random/manual commands and random/directional pushes using the training environment.
 
 
