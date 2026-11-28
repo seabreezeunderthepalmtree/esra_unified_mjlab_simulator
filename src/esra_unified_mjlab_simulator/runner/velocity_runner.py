@@ -55,7 +55,7 @@ class VelocityOnPolicyRunner(MjlabOnPolicyRunner):
             for name, value in metrics.items():
                 self.logger.writer.add_scalar(name, value, self.current_learning_iteration)
 
-    def _save_stage_alert(self, command: VelocityCurriculumCommand) -> None:
+    def _save_stage_checkpoint(self, command: VelocityCurriculumCommand) -> None:
         if self.gpu_global_rank != 0:
             return
         if self.logger.log_dir is None:
@@ -82,12 +82,6 @@ class VelocityOnPolicyRunner(MjlabOnPolicyRunner):
             f"change={metrics['value_loss_relative_change']:.2%}.\n"
             f"Checkpoint: {checkpoint}\n{next_action}"
         )
-        alert_path = Path(__file__).resolve().parents[3] / "alert"
-        try:
-            with alert_path.open("a", encoding="utf-8") as stream:
-                stream.write(message + "\n\n")
-        except OSError as error:
-            print(f"[WARN] Could not append to {alert_path}: {error}", flush=True)
         print(f"[Curriculum] {message}", flush=True)
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
@@ -153,7 +147,7 @@ class VelocityOnPolicyRunner(MjlabOnPolicyRunner):
             self._write_curriculum_metrics(command, mean_reward, value_loss)
 
             if command.stability.stable:
-                self._save_stage_alert(command)
+                self._save_stage_checkpoint(command)
                 if command.completed:
                     break
                 obs = self._start_stage(command, command.stage + 1)

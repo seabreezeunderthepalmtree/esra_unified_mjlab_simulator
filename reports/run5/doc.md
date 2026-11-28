@@ -27,15 +27,15 @@ After every training iteration, compare the latest 50 iterations with the preced
 
 Reward is the mean total environment reward over all rollout steps and parallel environments in one iteration. Value loss is the PPO update result, averaged across GPUs when applicable. Policy/surrogate loss is logged but does not gate progression. Non-finite windows cannot qualify.
 
-There are no survival or velocity-error gates and no frozen-model checks. Each visited stage trains for at least 100 iterations. When stable, save a stage checkpoint, append an alert, reset all environments and stability history, and immediately train the next stage. Stage 7 stability ends training. Reaching the iteration limit saves the current model.
+There are no survival or velocity-error gates and no frozen-model checks. Each visited stage trains for at least 100 iterations. When stable, save a stage checkpoint, print the stage results and checkpoint path, reset all environments and stability history, and immediately train the next stage. Stage 7 stability ends training. Reaching the iteration limit saves the current model.
 
 ## Starting Stage
 
 New and resumed runs default to Stage 1. Add `--agent.start-stage 6` with the existing resume options to continue a model trained through Stage 5 with yaw commands. Valid starting stages are `1`–`7`. The selected stage starts with fresh stability history; loaded model and optimizer parameters are retained. Later stages advance automatically. Play uses the stage saved in the checkpoint.
 
-## Alerts
+## Stage Logs
 
-The repository-root file `alert` receives one English message per stage transition, including the stage, iteration, window means/changes, and full checkpoint path. Snapshots are saved as `stage_<stage>_stable_model_<iteration>.pt` in the new run directory. Training continues without waiting for review. The alert file is local to the training machine; it does not automatically message this chat.
+Each stable stage prints its stage number, iteration, window means/changes, full checkpoint path, and next action to the terminal. These messages are included in `train.log` when training output is redirected. Snapshots are saved as `stage_<stage>_stable_model_<iteration>.pt` in the new run directory. Training continues without waiting for review.
 
 ## Interactive Inspection
 
@@ -46,9 +46,8 @@ Run `uv run --no-sync python src/esra_unified_mjlab_simulator/scripts/leo_policy
 - **env/mdp/curriculum.py**: `make_velocity_command_cfg()` centrally defines all seven profiles and the common stability rule. `VelocityStageCfg.yaw_rate_magnitude` defines fixed/random yaw magnitudes; its `ang_vel_z` property derives signed bounds. `_apply_stage_cfg()` supplies the selected planar/yaw settings to the sampler.
 - **env/mdp/command.py**: `AdditionalDirections.include_in_place` optionally adds zero translation. `yaw_rate_magnitude` samples angular magnitude and sign independently of planar motion; `_resample_command()` supports both fixed and random yaw. Full-stop commands still clear all three velocity components. Earlier stages retain their existing sampling.
 - **cfg/leo_quadruped/algo_cfg.py**: Adds `VelocityOnPolicyRunnerCfg.start_stage`, exposed as `--agent.start-stage` with default `1`.
-- **runner/velocity_runner.py**: Starts training at the selected stage and advances on stability. Saves stage snapshots and appends their paths to `alert`. Retains the inference-mode reset fix and old checkpoint compatibility.
-- **alert**: New root-level notification file.
-- **README.md**: Documents the starting-stage option, progression, and checkpoint/alert instructions.
+- **runner/velocity_runner.py**: Starts training at the selected stage and advances on stability. `_save_stage_checkpoint()` saves stage snapshots and prints their paths and stability results to the training log. Retains the inference-mode reset fix and old checkpoint compatibility.
+- **README.md**: Documents the starting-stage option, progression, and checkpoint/log instructions.
 - **scripts/leo_policy_viewer.py**: Adds `ViewerVelocityCommand` / `ViewerVelocityCommandCfg` for browser command control, `PushControls` / `install_push_controls()` for gated training pushes and queued manual kicks, and `LeoPolicyViewer` for playback and readouts. Training settings remain in their existing configuration files.
 
 Reward functions, disturbances, and PPO hyperparameters are unchanged. The existing runner handles all seven stages by reading the stage count, and the policy viewer automatically restores the checkpoint's profile. `Curriculum/velocity/` logs the stage, stage iteration count, window means, relative changes, stability, and completion. No commands, tests, or training were run; validation was limited to static inspection.

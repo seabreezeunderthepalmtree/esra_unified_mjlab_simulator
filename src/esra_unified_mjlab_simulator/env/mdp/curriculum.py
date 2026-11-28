@@ -1,7 +1,7 @@
 """Flat-ground command stages and a shared training-stability rule.
 
 All task settings live in make_velocity_command_cfg(). The runner supplies one
-reward/value-loss pair per iteration and handles checkpoints and notifications.
+reward/value-loss pair per iteration and handles checkpoints and training logs.
 """
 
 from __future__ import annotations

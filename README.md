@@ -50,7 +50,7 @@
    ```text
    logs/rsl_rl/ccbr_leo_velocity/<run_timestamp>/model_<iteration>.pt
    ```
-   Each stable stage also saves `stage_<stage>_stable_model_<iteration>.pt` in the same run directory and appends its full path and stability results to the repository-root `alert` file. Stage transitions happen automatically without waiting for review.
+   Each stable stage also saves `stage_<stage>_stable_model_<iteration>.pt` in the same run directory and prints its full path and stability results to the terminal (`train.log` when redirected as above). Stage transitions happen automatically without waiting for review.
 
 - Run a trained model:
    ```bash
