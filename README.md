@@ -39,7 +39,9 @@
    MUJOCO_GL=disable uv run --no-sync train Esra-Velocity-Rough-CCBR-Leo --gpu-ids "[0]" --env.scene.num-envs 4096 --agent.max-iterations 1500 --agent.resume True --agent.load-run "2026-11-27_21-27-02" --agent.load-checkpoint "model_1499.pt" > train.log 2>&1
    ```
 
-   Add `--agent.start-stage 2 (1-index, default 1)` to training command to start at that stage and skip earlier stages.
+   Add `--agent.start-stage 4` to start with the new directions (valid: `1`–`5`, default: `1`). Combine it with the resume options above to continue from a trained model.
+
+   Stage 4 keeps forward speed at 0.3–1 m/s and adds backward/left/right at 0.3 m/s. Stage 5 uses 0.3–1 m/s in all four directions. Both use 30% stop, equally likely moving directions, and uniformly sampled 3–8-second command durations. The existing reward/value-loss stability rule advances stages automatically; Stage 5 stability ends training. See [Run 5](reports/run5/doc.md).
 
 - Saved models:
    Checkpoints are saved every 50 iterations and at the end of training:

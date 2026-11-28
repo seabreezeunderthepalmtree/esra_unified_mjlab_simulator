@@ -36,6 +36,7 @@ __all__ = [
 class VelocityStageCfg:
     lin_vel_x: tuple[float, float]
     standing_probability: float
+    additional_directions: UniformVelocityCommandCfg.AdditionalDirections | None = None
 
 
 class StageStability:
@@ -105,7 +106,18 @@ class VelocityCurriculumCommand(UniformVelocityCommand):
         return self.cfg.stages[self.stage - 1]
 
     def _apply_stage_cfg(self) -> None:
-        self.cfg.ranges = replace(self.cfg.ranges, lin_vel_x=self.stage_cfg.lin_vel_x)
+        additional = self.stage_cfg.additional_directions
+        lateral_range = (
+            (0.0, 0.0)
+            if additional is None
+            else (-additional.lateral[1], additional.lateral[1])
+        )
+        self.cfg.ranges = replace(
+            self.cfg.ranges,
+            lin_vel_x=self.stage_cfg.lin_vel_x,
+            lin_vel_y=lateral_range,
+        )
+        self.cfg.additional_directions = additional
         self.cfg.rel_standing_envs = self.stage_cfg.standing_probability
 
     def begin_stage(self, stage: int) -> None:
@@ -197,12 +209,31 @@ class VelocityCurriculumCommandCfg(UniformVelocityCommandCfg):
 def make_velocity_command_cfg() -> VelocityCurriculumCommandCfg:
     """The single source for command profiles and the common stability rule."""
     walking_speed = 0.3
+    fixed_speed = (walking_speed, walking_speed)
+    walking_range = (walking_speed, 1.0)
+    walking_stop_probability = 0.3
     stages = (
         VelocityStageCfg(lin_vel_x=(0.0, 0.0), standing_probability=1.0),
+        VelocityStageCfg(lin_vel_x=fixed_speed, standing_probability=0.2),
         VelocityStageCfg(
-            lin_vel_x=(walking_speed, walking_speed), standing_probability=0.2
+            lin_vel_x=walking_range, standing_probability=walking_stop_probability
         ),
-        VelocityStageCfg(lin_vel_x=(walking_speed, 1.0), standing_probability=0.3),
+        # Introduce backward/lateral walking while retaining forward speed coverage.
+        VelocityStageCfg(
+            lin_vel_x=walking_range,
+            standing_probability=walking_stop_probability,
+            additional_directions=UniformVelocityCommandCfg.AdditionalDirections(
+                backward=fixed_speed, lateral=fixed_speed
+            ),
+        ),
+        # Expand the three new directions to the same speed range as forward.
+        VelocityStageCfg(
+            lin_vel_x=walking_range,
+            standing_probability=walking_stop_probability,
+            additional_directions=UniformVelocityCommandCfg.AdditionalDirections(
+                backward=walking_range, lateral=walking_range
+            ),
+        ),
     )
     return VelocityCurriculumCommandCfg(
         entity_name="robot",
@@ -213,6 +244,7 @@ def make_velocity_command_cfg() -> VelocityCurriculumCommandCfg:
         stages=stages,
         resampling_time_range=(3.0, 8.0),
         rel_standing_envs=stages[-1].standing_probability,
+        additional_directions=stages[-1].additional_directions,
         rel_heading_envs=0.0,
         rel_forward_envs=0.0,
         rel_world_envs=0.0,

@@ -82,26 +82,47 @@ class UniformVelocityCommand(CommandTerm):
 
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         r = torch.empty(len(env_ids), device=self.device)
-        self.vel_command_b[env_ids, 0] = r.uniform_(*self.cfg.ranges.lin_vel_x)
-        self.vel_command_b[env_ids, 1] = r.uniform_(*self.cfg.ranges.lin_vel_y)
+        additional = self.cfg.additional_directions
+        if additional is None:
+            self.vel_command_b[env_ids, 0] = r.uniform_(*self.cfg.ranges.lin_vel_x)
+            self.vel_command_b[env_ids, 1] = r.uniform_(*self.cfg.ranges.lin_vel_y)
+        else:
+            # Choose one body-frame direction, then sample its speed magnitude.
+            # Forward keeps the existing x range; left/right share a lateral range.
+            axes = self.vel_command_b.new_tensor(
+                ((1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0))
+            )
+            speed_ranges = self.vel_command_b.new_tensor(
+                (
+                    self.cfg.ranges.lin_vel_x,
+                    additional.backward,
+                    additional.lateral,
+                    additional.lateral,
+                )
+            )
+            direction = torch.randint(len(axes), (len(env_ids),), device=self.device)
+            bounds = speed_ranges[direction]
+            speed = bounds[:, 0] + r.uniform_(0.0, 1.0) * (bounds[:, 1] - bounds[:, 0])
+            self.vel_command_b[env_ids, :2] = axes[direction] * speed.unsqueeze(-1)
         self.vel_command_b[env_ids, 2] = r.uniform_(*self.cfg.ranges.ang_vel_z)
         if self.cfg.heading_command:
             assert self.cfg.ranges.heading is not None
             self.heading_target[env_ids] = r.uniform_(*self.cfg.ranges.heading)
             self.is_heading_env[env_ids] = (
-                r.uniform_(0.0, 1.0) <= self.cfg.rel_heading_envs
+                r.uniform_(0.0, 1.0) < self.cfg.rel_heading_envs
             )
         self.is_standing_env[env_ids] = (
-            r.uniform_(0.0, 1.0) <= self.cfg.rel_standing_envs
+            r.uniform_(0.0, 1.0) < self.cfg.rel_standing_envs
         )
 
         # Randomly assign world-frame envs.
-        self.is_world_env[env_ids] = r.uniform_(0.0, 1.0) <= self.cfg.rel_world_envs
+        # Strict comparisons keep zero-probability modes completely disabled.
+        self.is_world_env[env_ids] = r.uniform_(0.0, 1.0) < self.cfg.rel_world_envs
         # Copy sampled velocities as world-frame reference for world envs.
         self.vel_command_w[env_ids] = self.vel_command_b[env_ids]
 
         # Forward-only envs: positive lin_vel_x, zero lateral and angular.
-        self.is_forward_env[env_ids] = r.uniform_(0.0, 1.0) <= self.cfg.rel_forward_envs
+        self.is_forward_env[env_ids] = r.uniform_(0.0, 1.0) < self.cfg.rel_forward_envs
         fwd_ids = env_ids[self.is_forward_env[env_ids]]
         if len(fwd_ids) > 0:
             self.vel_command_b[fwd_ids, 0] = self.vel_command_b[fwd_ids, 0].abs()
@@ -351,6 +372,27 @@ class UniformVelocityCommandCfg(CommandTermCfg):
 
     ranges: Ranges
 
+    @dataclass(frozen=True, kw_only=True)
+    class AdditionalDirections:
+        """Enable equal-probability forward/backward/left/right sampling.
+
+        Forward speed uses ranges.lin_vel_x. These ranges are nonnegative
+        magnitudes; lateral applies to both left and right.
+        """
+
+        backward: tuple[float, float]
+        lateral: tuple[float, float]
+
+        def __post_init__(self) -> None:
+            for bounds in (self.backward, self.lateral):
+                if not 0 <= bounds[0] <= bounds[1]:
+                    raise ValueError(
+                        "Additional direction speed ranges must be ordered and nonnegative"
+                    )
+
+    additional_directions: AdditionalDirections | None = None
+    """None samples x/y independently; otherwise sample one of four directions."""
+
     @dataclass
     class VizCfg:
         z_offset: float = 0.2
@@ -362,6 +404,8 @@ class UniformVelocityCommandCfg(CommandTermCfg):
         return UniformVelocityCommand(self, env)
 
     def __post_init__(self):
+        if self.additional_directions is not None and self.ranges.lin_vel_x[0] < 0:
+            raise ValueError("Four-direction sampling requires nonnegative forward speeds")
         if self.heading_command and self.ranges.heading is None:
             raise ValueError(
                 "The velocity command has heading commands active (heading_command=True) but "
