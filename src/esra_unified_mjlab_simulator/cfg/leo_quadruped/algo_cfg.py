@@ -1,5 +1,7 @@
 """RL configuration for CCBR Leo robot velocity task."""
 
+from dataclasses import dataclass
+
 from mjlab.rl import (
     RslRlModelCfg,
     RslRlOnPolicyRunnerCfg,
@@ -7,9 +9,15 @@ from mjlab.rl import (
 )
 
 
-def ccbr_leo_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+@dataclass(kw_only=True)
+class VelocityOnPolicyRunnerCfg(RslRlOnPolicyRunnerCfg):
+    start_stage: int = 1
+    """First curriculum stage to train, using 1-based stage numbers."""
+
+
+def ccbr_leo_ppo_runner_cfg() -> VelocityOnPolicyRunnerCfg:
     """Create RL runner configuration for CCBR Leo robot velocity task."""
-    return RslRlOnPolicyRunnerCfg(
+    return VelocityOnPolicyRunnerCfg(
         actor=RslRlModelCfg(
             hidden_dims=(512, 256, 128),
             activation="elu",

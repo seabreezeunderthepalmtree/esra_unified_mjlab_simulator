@@ -19,9 +19,11 @@ After every training iteration, compare the latest 50 iterations with the preced
 
 Reward is the mean total environment reward over all rollout steps and parallel environments in one iteration. Value loss is the PPO update result, averaged across GPUs when applicable. Policy/surrogate loss is logged but does not gate progression. Non-finite windows cannot qualify.
 
-There are no survival or velocity-error gates and no frozen-model checks. Each stage trains for at least 100 iterations. When stable, save a stage checkpoint, append an alert, reset all environments and stability history, and immediately train the next stage. Stage 3 stability ends training. Reaching the iteration limit saves the current model. Stability is a scheduling rule, not proof of motion quality.
+There are no survival or velocity-error gates and no frozen-model checks. Each visited stage trains for at least 100 iterations. When stable, save a stage checkpoint, append an alert, reset all environments and stability history, and immediately train the next stage. Stage 3 stability ends training. Reaching the iteration limit saves the current model.
 
-New and resumed runs start training at Stage 1 with fresh stability history; loaded model and optimizer parameters are retained. Play uses the stage saved in the checkpoint.
+## Starting Stage
+
+New and resumed runs default to Stage 1. Add `--agent.start-stage 2` or `--agent.start-stage 3` to the training command to skip earlier stages. Valid values are `1`, `2`, and `3`. The selected stage starts with fresh stability history; loaded model and optimizer parameters are retained. Later stages advance automatically. Play uses the stage saved in the checkpoint.
 
 ## Alerts
 
@@ -30,8 +32,9 @@ The repository-root file `alert` receives one English message per stage transiti
 ## File Changes
 
 - **env/mdp/curriculum.py**: Adds `StageStability`; removes episode acceptance and velocity-error gates. `make_velocity_command_cfg()` centrally defines the three command profiles, 50-iteration windows, 5% threshold, and numerical floor. The existing sampler and episode timeout are retained.
-- **runner/velocity_runner.py**: Replaces check/train branching with continuous PPO training and stability-based transitions. Saves stage snapshots and appends their paths to `alert`. Retains the inference-mode reset fix and old checkpoint compatibility.
+- **cfg/leo_quadruped/algo_cfg.py**: Adds `VelocityOnPolicyRunnerCfg.start_stage`, exposed as `--agent.start-stage` with default `1`.
+- **runner/velocity_runner.py**: Starts training at the selected stage and advances on stability. Saves stage snapshots and appends their paths to `alert`. Retains the inference-mode reset fix and old checkpoint compatibility.
 - **alert**: New root-level notification file.
-- **README.md**: Updates progression and checkpoint/alert instructions.
+- **README.md**: Documents the starting-stage option, progression, and checkpoint/alert instructions.
 
 Reward functions, disturbances, `command.py`, and PPO hyperparameters are unchanged. `Curriculum/velocity/` logs the stage, stage iteration count, window means, relative changes, stability, and completion. No commands, tests, or training were run; validation was limited to static inspection.

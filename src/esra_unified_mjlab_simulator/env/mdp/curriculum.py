@@ -145,8 +145,8 @@ class VelocityCurriculumCommand(UniformVelocityCommand):
             self.vel_command_w.zero_()
 
     def curriculum_state_dict(self) -> dict[str, int | bool]:
-        # Play restores the saved profile. A new learn() restarts Stage 1 and its
-        # stability history while retaining loaded model/optimizer parameters.
+        # Play restores the saved profile. A new learn() starts at the configured
+        # stage with fresh stability history and loaded model/optimizer parameters.
         return {"stage": self.stage, "completed": self.completed}
 
     @torch.inference_mode()

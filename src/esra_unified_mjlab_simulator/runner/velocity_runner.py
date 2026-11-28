@@ -67,7 +67,7 @@ class VelocityOnPolicyRunner(MjlabOnPolicyRunner):
         self.save(str(checkpoint))
         metrics = command.stability.window_metrics
         next_action = (
-            "All stages are stable; training is complete."
+            "The final stage is stable; training is complete."
             if command.completed else f"Automatically continuing to Stage {command.stage + 1}."
         )
         timestamp = datetime.now(timezone.utc).isoformat()
@@ -91,7 +91,7 @@ class VelocityOnPolicyRunner(MjlabOnPolicyRunner):
         print(f"[Curriculum] {message}", flush=True)
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
-        """Train every stage and advance on reward/value-loss stability alone."""
+        """Train from the selected stage and advance on reward/value-loss stability."""
         command = self.env.unwrapped.command_manager.get_term("twist")
         if not isinstance(command, VelocityCurriculumCommand):
             return super().learn(num_learning_iterations, init_at_random_ep_len)
@@ -99,9 +99,11 @@ class VelocityOnPolicyRunner(MjlabOnPolicyRunner):
             self.alg.broadcast_parameters()
         self.logger.init_logging_writer()
         self.alg.train_mode()
-        # New and resumed runs use the same Stage 1 start; weights and optimizer
-        # remain loaded. Stage resets provide fresh counters and stability windows.
-        obs = self._start_stage(command, 1)
+        # New and resumed runs use the configured starting stage. Loaded weights
+        # and optimizer remain intact; stage counters and stability windows reset.
+        obs = self._start_stage(command, self.cfg["start_stage"])
+        if self.gpu_global_rank == 0:
+            print(f"[Curriculum] Starting training at Stage {command.stage}.", flush=True)
         start_it = self.current_learning_iteration
         total_it = start_it + num_learning_iterations
 
