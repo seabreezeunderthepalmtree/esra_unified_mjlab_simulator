@@ -2,31 +2,36 @@
 
 ## Stages
 
-| Stage | Commands | Passing criteria |
+| Stage | Commands | Progression |
 |---|---|---|
-| 1: Standing | Zero velocity | All of the latest 10 episodes survive |
-| 2: Fixed-speed walking and stopping | 80% forward at 0.3 m/s, 20% stop | All 10 episodes survive, with mean velocity error <5% |
-| 3: Random-speed walking and stopping | 70% forward speed sampled uniformly from 0.3–1 m/s, 30% stop | Same as Stage 2; save the model and end training when passed |
+| 1: Standing | Zero velocity | Advance when training is stable |
+| 2: Fixed-speed walking and stopping | 80% forward at 0.3 m/s, 20% stop | Same stability rule |
+| 3: Random-speed walking and stopping | 70% forward speed sampled uniformly from 0.3–1 m/s, 30% stop | Save and finish when stable |
 
-Use flat ground throughout, with 20-second episodes and zero lateral and turning commands. Each command lasts for a duration sampled uniformly from 3–8 seconds. Consecutive samples may produce the same command.
+Keep flat ground, 20-second episodes, zero lateral/turning commands, and the existing disturbances. Command durations are sampled uniformly from 3–8 seconds; consecutive commands may be identical.
 
-## Workflow
+## Stability Rule
 
-Both new and existing models are checked from Stage 1, keeping their current parameters. At each stage, first run 10 episodes with the model frozen. If they pass, check the next stage; otherwise, train the current stage. During training, advance as soon as the latest 10 episodes meet the criteria, without an additional evaluation.
+After every training iteration, compare the latest 50 iterations with the preceding 50 from the same stage. Both mean reward and mean value loss must change by less than 5%:
 
-Count episodes across all parallel environments, including failures. Episodes ending on the same step are ordered by environment index; with multiple GPUs, order by rank first. Reset all environments and clear statistics when advancing. Save the current model if the iteration limit is reached. Reward and Loss do not determine progression.
+    change(X) = abs(mean_recent_50(X) - mean_previous_50(X))
+                / max(abs(mean_previous_50(X)), 1e-8)
 
-## Velocity Error
+Reward is the mean total environment reward over all rollout steps and parallel environments in one iteration. Value loss is the PPO update result, averaged across GPUs when applicable. Policy/surrogate loss is logged but does not gate progression. Non-finite windows cannot qualify.
 
-    e(t) = norm(actual planar velocity - target planar velocity) / max(norm(target planar velocity), 0.3 m/s)
+There are no survival or velocity-error gates and no frozen-model checks. Each stage trains for at least 100 iterations. When stable, save a stage checkpoint, append an alert, reset all environments and stability history, and immediately train the next stage. Stage 3 stability ends training. Reaching the iteration limit saves the current model. Stability is a scheduling rule, not proof of motion quality.
 
-Average over all control steps within each episode, then average the latest 10 episode means. Include starting, slowing down, and lateral errors. For stop commands, use 0.3 m/s as the denominator. The window mean must be <0.05; individual episodes do not each need to meet this threshold. Stage 1 checks survival only.
+New and resumed runs start training at Stage 1 with fresh stability history; loaded model and optimizer parameters are retained. Play uses the stage saved in the checkpoint.
+
+## Alerts
+
+The repository-root file `alert` receives one English message per stage transition, including the stage, iteration, window means/changes, and full checkpoint path. Snapshots are saved as `stage_<stage>_stable_model_<iteration>.pt` in the new run directory. Training continues without waiting for review. The alert file is local to the training machine; it does not automatically message this chat.
 
 ## File Changes
 
-- **env/mdp/curriculum.py**: Adds `VelocityStageCfg` and replaces `StandingToWalkingCommand` / `StandingToWalkingCommandCfg` with `VelocityCurriculumCommand` / `VelocityCurriculumCommandCfg`. `make_velocity_command_cfg()` defines all settings; `begin_stage()` switches stages, `record_step()` / `reset()` collect episode results, `record_results()` checks acceptance, and `curriculum_episode_complete()` controls episode duration. Reuses the sampler in `command.py`.
-- **runner/velocity_runner.py**: `learn()` implements the check/train loop; `_check_stage()` checks the frozen model, and `_collect_results()` aggregates episodes. `save()` / `load()` persist the stage and support older checkpoints. Training rechecks from Stage 1; play uses the saved stage.
-- **env/velocity_env.py**: Connects the new termination callback and uses the shared episode duration.
-- **cfg/leo_quadruped/env_cfg.py, README.md**: Update the explanation of how play uses the checkpoint stage.
+- **env/mdp/curriculum.py**: Adds `StageStability`; removes episode acceptance and velocity-error gates. `make_velocity_command_cfg()` centrally defines the three command profiles, 50-iteration windows, 5% threshold, and numerical floor. The existing sampler and episode timeout are retained.
+- **runner/velocity_runner.py**: Replaces check/train branching with continuous PPO training and stability-based transitions. Saves stage snapshots and appends their paths to `alert`. Retains the inference-mode reset fix and old checkpoint compatibility.
+- **alert**: New root-level notification file.
+- **README.md**: Updates progression and checkpoint/alert instructions.
 
-Settings are defined only in `curriculum.py`; `command.py` and PPO hyperparameters are unchanged. Metrics under `Curriculum/velocity/` report the stage, window episode count, survival rate, mean error, and passing status.
+Reward functions, disturbances, `command.py`, and PPO hyperparameters are unchanged. `Curriculum/velocity/` logs the stage, stage iteration count, window means, relative changes, stability, and completion. No commands, tests, or training were run; validation was limited to static inspection.

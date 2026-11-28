@@ -1,5 +1,6 @@
-import os
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 
 import torch
 import wandb
@@ -18,12 +19,10 @@ class VelocityOnPolicyRunner(MjlabOnPolicyRunner):
     env: RslRlVecEnvWrapper
 
     @torch.inference_mode()
-    def _start_collection(
-        self, command: VelocityCurriculumCommand, stage: int, *, checking: bool
-    ):
+    def _start_stage(self, command: VelocityCurriculumCommand, stage: int):
         # Rollouts can replace environment buffers with inference tensors.
-        # Reset them in the same mode when checking/training or stages change.
-        command.begin_stage(stage, checking=checking)
+        # Keep every stage reset in inference mode as well.
+        command.begin_stage(stage)
         obs, _ = self.env.reset()
         dones = torch.ones(self.env.num_envs, device=self.device, dtype=torch.long)
         self.alg.get_policy().reset(dones)
@@ -31,78 +30,84 @@ class VelocityOnPolicyRunner(MjlabOnPolicyRunner):
         self.alg.storage.clear()
         self.logger.cur_reward_sum.zero_()
         self.logger.cur_episode_length.zero_()
-        command.recording = True
+        self.logger.rewbuffer.clear()
+        self.logger.lenbuffer.clear()
+        self.logger.ep_extras.clear()
         return obs.to(self.device)
 
-    def _collect_results(self, command: VelocityCurriculumCommand) -> None:
-        results = command.pop_episode_results()
+    def _iteration_statistics(self, mean_reward: float, value_loss: float) -> tuple[float, float]:
+        values = torch.tensor([mean_reward, value_loss], dtype=torch.float64, device=self.device)
         if self.is_distributed:
-            # All ranks participate on every step, even if no local env ended.
-            # Order is simulation step, then rank, then local environment index.
-            gathered = [None] * self.gpu_world_size
-            torch.distributed.all_gather_object(gathered, results)
-            results = [result for rank_results in gathered for result in rank_results]
-        command.record_results(results)
+            torch.distributed.all_reduce(values)
+            values /= self.gpu_world_size
+        reward, loss = values.tolist()
+        return reward, loss
 
-    def _write_curriculum_metrics(self, command: VelocityCurriculumCommand) -> None:
+    def _write_curriculum_metrics(
+        self, command: VelocityCurriculumCommand, mean_reward: float, value_loss: float
+    ) -> None:
         if self.logger.writer is not None:
-            for name, value in command.progress_metrics().items():
+            metrics = {
+                **command.progress_metrics(),
+                "Curriculum/velocity/iteration_mean_reward": mean_reward,
+                "Curriculum/velocity/iteration_value_loss": value_loss,
+            }
+            for name, value in metrics.items():
                 self.logger.writer.add_scalar(name, value, self.current_learning_iteration)
 
-    def _check_stage(self, command: VelocityCurriculumCommand, stage: int) -> bool:
-        """Run the first acceptance window without changing model parameters."""
-        obs = self._start_collection(command, stage, checking=True)
-        self.alg.eval_mode()
-        policy = self.alg.get_policy()
-        with torch.inference_mode():
-            while not command.check_finished:
-                actions = policy(obs)
-                obs, rewards, dones, _ = self.env.step(actions.to(self.env.device))
-                if self.cfg.get("check_for_nan", True):
-                    check_nan(obs, rewards, dones)
-                obs = obs.to(self.device)
-                policy.reset(dones.to(self.device))
-                self._collect_results(command)
-        self._write_curriculum_metrics(command)
-        if self.gpu_global_rank == 0:
-            result = "passed" if command.passed else "failed; starting training"
-            print(
-                f"[Curriculum] Stage {stage}: {result}; "
-                f"mean relative velocity error={command.mean_error:.2%}"
-            )
-        return command.passed
+    def _save_stage_alert(self, command: VelocityCurriculumCommand) -> None:
+        if self.gpu_global_rank != 0:
+            return
+        if self.logger.log_dir is None:
+            raise ValueError("A training log directory is required to save stage checkpoints")
+        run_dir = Path(self.logger.log_dir).resolve()
+        checkpoint = run_dir / (
+            f"stage_{command.stage}_stable_model_{self.current_learning_iteration}.pt"
+        )
+        self.save(str(checkpoint))
+        metrics = command.stability.window_metrics
+        next_action = (
+            "All stages are stable; training is complete."
+            if command.completed else f"Automatically continuing to Stage {command.stage + 1}."
+        )
+        timestamp = datetime.now(timezone.utc).isoformat()
+        message = (
+            f"[{timestamp}] Stage {command.stage} stable at iteration "
+            f"{self.current_learning_iteration}.\n"
+            f"Reward means: {metrics['reward_previous_mean']:.6g} -> "
+            f"{metrics['reward_recent_mean']:.6g}; "
+            f"change={metrics['reward_relative_change']:.2%}.\n"
+            f"Value loss means: {metrics['value_loss_previous_mean']:.6g} -> "
+            f"{metrics['value_loss_recent_mean']:.6g}; "
+            f"change={metrics['value_loss_relative_change']:.2%}.\n"
+            f"Checkpoint: {checkpoint}\n{next_action}"
+        )
+        alert_path = Path(__file__).resolve().parents[3] / "alert"
+        try:
+            with alert_path.open("a", encoding="utf-8") as stream:
+                stream.write(message + "\n\n")
+        except OSError as error:
+            print(f"[WARN] Could not append to {alert_path}: {error}", flush=True)
+        print(f"[Curriculum] {message}", flush=True)
 
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
-        """Check each stage first; otherwise use the latest training episodes."""
+        """Train every stage and advance on reward/value-loss stability alone."""
         command = self.env.unwrapped.command_manager.get_term("twist")
         if not isinstance(command, VelocityCurriculumCommand):
             return super().learn(num_learning_iterations, init_at_random_ep_len)
-        # Full episodes are required. Do not randomize episode_length_buf, which
-        # would create shortened startup timeouts and invalidate the window.
         if self.is_distributed:
             self.alg.broadcast_parameters()
         self.logger.init_logging_writer()
+        self.alg.train_mode()
+        # New and resumed runs use the same Stage 1 start; weights and optimizer
+        # remain loaded. Stage resets provide fresh counters and stability windows.
+        obs = self._start_stage(command, 1)
         start_it = self.current_learning_iteration
         total_it = start_it + num_learning_iterations
-        it = start_it
-        stage = 1
-        needs_check = True
 
-        while True:
-            if needs_check:
-                if self._check_stage(command, stage):
-                    if stage == len(command.cfg.stages):
-                        command.completed = True
-                        break
-                    stage += 1
-                    continue
-                obs = self._start_collection(command, stage, checking=False)
-                self.alg.train_mode()
-                needs_check = False
-            if it >= total_it:
-                break
-
+        for it in range(start_it, total_it):
             start = time.perf_counter()
+            reward_sum = torch.zeros((), device=self.device)
             with torch.inference_mode():
                 for _ in range(self.cfg["num_steps_per_env"]):
                     actions = self.alg.act(obs)
@@ -112,28 +117,26 @@ class VelocityOnPolicyRunner(MjlabOnPolicyRunner):
                     obs, rewards, dones = (
                         obs.to(self.device), rewards.to(self.device), dones.to(self.device)
                     )
+                    reward_sum += rewards.mean()
                     self.alg.process_env_step(obs, rewards, dones, extras)
-                    self._collect_results(command)
-                    extras.setdefault("log", {}).update(command.progress_metrics())
                     intrinsic_rewards = (
                         self.alg.intrinsic_rewards
                         if self.cfg["algorithm"].get("rnd_cfg") else None
                     )
                     self.logger.process_env_step(rewards, dones, extras, intrinsic_rewards)
                 collect_time = time.perf_counter() - start
-                if not command.passed:
-                    self.alg.compute_returns(obs)
+                self.alg.compute_returns(obs)
 
             start = time.perf_counter()
-            if command.passed:
-                # Keep the weights that met the rule. Do not apply another update
-                # to the qualifying rollout or carry it into the next stage.
-                self.alg.storage.clear()
-                loss_dict = {}
-            else:
-                loss_dict = self.alg.update()
+            loss_dict = self.alg.update()
             learn_time = time.perf_counter() - start
             self.current_learning_iteration = it
+            mean_reward, value_loss = self._iteration_statistics(
+                reward_sum.item() / self.cfg["num_steps_per_env"], loss_dict["value"]
+            )
+            command.stability.record(mean_reward, value_loss)
+            if command.stability.stable and command.stage == len(command.cfg.stages):
+                command.completed = True
             self.logger.log(
                 it=it,
                 start_it=start_it,
@@ -145,24 +148,18 @@ class VelocityOnPolicyRunner(MjlabOnPolicyRunner):
                 action_std=self.alg.get_policy().output_std,
                 rnd_weight=self.alg.rnd.weight if self.cfg["algorithm"].get("rnd_cfg") else None,
             )
-            if self.logger.writer is not None and it % self.cfg["save_interval"] == 0:
-                self.save(os.path.join(self.logger.log_dir, f"model_{it}.pt"))
-            it += 1
-            if command.passed:
-                if self.gpu_global_rank == 0:
-                    print(f"[Curriculum] Stage {stage}: passed using the latest training episodes")
-                if stage == len(command.cfg.stages):
-                    command.completed = True
-                    break
-                stage += 1
-                needs_check = True
+            self._write_curriculum_metrics(command, mean_reward, value_loss)
 
-        command.recording = False
-        self._write_curriculum_metrics(command)
-        if command.completed and self.gpu_global_rank == 0:
-            print("[Curriculum] All velocity stages passed; training complete")
+            if command.stability.stable:
+                self._save_stage_alert(command)
+                if command.completed:
+                    break
+                obs = self._start_stage(command, command.stage + 1)
+            elif self.logger.writer is not None and it % self.cfg["save_interval"] == 0:
+                self.save(str(Path(self.logger.log_dir) / f"model_{it}.pt"))
+
         if self.logger.writer is not None:
-            self.save(os.path.join(self.logger.log_dir, f"model_{self.current_learning_iteration}.pt"))
+            self.save(str(Path(self.logger.log_dir) / f"model_{self.current_learning_iteration}.pt"))
             self.logger.stop_logging_writer()
 
     def save(self, path: str, infos=None):
