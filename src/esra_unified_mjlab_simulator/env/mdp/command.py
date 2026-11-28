@@ -89,22 +89,29 @@ class UniformVelocityCommand(CommandTerm):
         else:
             # Choose one body-frame direction, then sample its speed magnitude.
             # Forward keeps the existing x range; left/right share a lateral range.
-            axes = self.vel_command_b.new_tensor(
-                ((1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0))
-            )
-            speed_ranges = self.vel_command_b.new_tensor(
-                (
-                    self.cfg.ranges.lin_vel_x,
-                    additional.backward,
-                    additional.lateral,
-                    additional.lateral,
-                )
-            )
+            direction_axes = [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)]
+            direction_ranges = [
+                self.cfg.ranges.lin_vel_x,
+                additional.backward,
+                additional.lateral,
+                additional.lateral,
+            ]
+            if additional.include_in_place:
+                direction_axes.append((0.0, 0.0))
+                direction_ranges.append((0.0, 0.0))
+            axes = self.vel_command_b.new_tensor(direction_axes)
+            speed_ranges = self.vel_command_b.new_tensor(direction_ranges)
             direction = torch.randint(len(axes), (len(env_ids),), device=self.device)
             bounds = speed_ranges[direction]
             speed = bounds[:, 0] + r.uniform_(0.0, 1.0) * (bounds[:, 1] - bounds[:, 0])
             self.vel_command_b[env_ids, :2] = axes[direction] * speed.unsqueeze(-1)
-        self.vel_command_b[env_ids, 2] = r.uniform_(*self.cfg.ranges.ang_vel_z)
+        if self.cfg.yaw_rate_magnitude is None:
+            self.vel_command_b[env_ids, 2] = r.uniform_(*self.cfg.ranges.ang_vel_z)
+        else:
+            # Yaw is independent of the planar command, including zero translation.
+            magnitude = r.uniform_(*self.cfg.yaw_rate_magnitude)
+            sign = 2 * torch.randint(2, (len(env_ids),), device=self.device) - 1
+            self.vel_command_b[env_ids, 2] = magnitude * sign
         if self.cfg.heading_command:
             assert self.cfg.ranges.heading is not None
             self.heading_target[env_ids] = r.uniform_(*self.cfg.ranges.heading)
@@ -374,14 +381,16 @@ class UniformVelocityCommandCfg(CommandTermCfg):
 
     @dataclass(frozen=True, kw_only=True)
     class AdditionalDirections:
-        """Enable equal-probability forward/backward/left/right sampling.
+        """Enable equal-probability cardinal planar command sampling.
 
         Forward speed uses ranges.lin_vel_x. These ranges are nonnegative
-        magnitudes; lateral applies to both left and right.
+        magnitudes; lateral applies to both left and right. include_in_place
+        adds an equally likely zero-planar-velocity option; yaw is sampled separately.
         """
 
         backward: tuple[float, float]
         lateral: tuple[float, float]
+        include_in_place: bool = False
 
         def __post_init__(self) -> None:
             for bounds in (self.backward, self.lateral):
@@ -391,7 +400,12 @@ class UniformVelocityCommandCfg(CommandTermCfg):
                     )
 
     additional_directions: AdditionalDirections | None = None
-    """None samples x/y independently; otherwise sample one of four directions."""
+    """None samples x/y independently; otherwise use the cardinal command options."""
+
+    yaw_rate_magnitude: tuple[float, float] | None = None
+    """Sample a nonnegative yaw magnitude and an equally likely sign independently.
+    Equal endpoints give a fixed absolute rate. None uses ranges.ang_vel_z directly.
+    """
 
     @dataclass
     class VizCfg:
@@ -406,6 +420,9 @@ class UniformVelocityCommandCfg(CommandTermCfg):
     def __post_init__(self):
         if self.additional_directions is not None and self.ranges.lin_vel_x[0] < 0:
             raise ValueError("Four-direction sampling requires nonnegative forward speeds")
+        if self.yaw_rate_magnitude is not None:
+            if not 0 <= self.yaw_rate_magnitude[0] <= self.yaw_rate_magnitude[1]:
+                raise ValueError("Yaw-rate magnitude range must be ordered and nonnegative")
         if self.heading_command and self.ranges.heading is None:
             raise ValueError(
                 "The velocity command has heading commands active (heading_command=True) but "

@@ -37,6 +37,15 @@ class VelocityStageCfg:
     lin_vel_x: tuple[float, float]
     standing_probability: float
     additional_directions: UniformVelocityCommandCfg.AdditionalDirections | None = None
+    yaw_rate_magnitude: tuple[float, float] | None = None
+
+    @property
+    def ang_vel_z(self) -> tuple[float, float]:
+        """Derive signed yaw bounds from the stage's magnitude range."""
+        if self.yaw_rate_magnitude is None:
+            return (0.0, 0.0)
+        maximum = self.yaw_rate_magnitude[1]
+        return (-maximum, maximum)
 
 
 class StageStability:
@@ -116,8 +125,10 @@ class VelocityCurriculumCommand(UniformVelocityCommand):
             self.cfg.ranges,
             lin_vel_x=self.stage_cfg.lin_vel_x,
             lin_vel_y=lateral_range,
+            ang_vel_z=self.stage_cfg.ang_vel_z,
         )
         self.cfg.additional_directions = additional
+        self.cfg.yaw_rate_magnitude = self.stage_cfg.yaw_rate_magnitude
         self.cfg.rel_standing_envs = self.stage_cfg.standing_probability
 
     def begin_stage(self, stage: int) -> None:
@@ -204,6 +215,9 @@ class VelocityCurriculumCommandCfg(UniformVelocityCommandCfg):
                 raise ValueError("Standing probability must be in [0, 1]")
             if not 0 <= stage.lin_vel_x[0] <= stage.lin_vel_x[1]:
                 raise ValueError("Forward speed range must be ordered and nonnegative")
+            if stage.yaw_rate_magnitude is not None:
+                if not 0 <= stage.yaw_rate_magnitude[0] <= stage.yaw_rate_magnitude[1]:
+                    raise ValueError("Yaw-rate magnitude range must be ordered and nonnegative")
 
 
 def make_velocity_command_cfg() -> VelocityCurriculumCommandCfg:
@@ -212,6 +226,12 @@ def make_velocity_command_cfg() -> VelocityCurriculumCommandCfg:
     fixed_speed = (walking_speed, walking_speed)
     walking_range = (walking_speed, 1.0)
     walking_stop_probability = 0.3
+    fixed_yaw_rate = 0.5
+    maximum_yaw_rate = 0.7
+    walking_directions = UniformVelocityCommandCfg.AdditionalDirections(
+        backward=walking_range, lateral=walking_range
+    )
+    turning_directions = replace(walking_directions, include_in_place=True)
     stages = (
         VelocityStageCfg(lin_vel_x=(0.0, 0.0), standing_probability=1.0),
         VelocityStageCfg(lin_vel_x=fixed_speed, standing_probability=0.2),
@@ -230,9 +250,21 @@ def make_velocity_command_cfg() -> VelocityCurriculumCommandCfg:
         VelocityStageCfg(
             lin_vel_x=walking_range,
             standing_probability=walking_stop_probability,
-            additional_directions=UniformVelocityCommandCfg.AdditionalDirections(
-                backward=walking_range, lateral=walking_range
-            ),
+            additional_directions=walking_directions,
+        ),
+        # Combine either fixed yaw direction with any planar command or turn in place.
+        VelocityStageCfg(
+            lin_vel_x=walking_range,
+            standing_probability=walking_stop_probability,
+            additional_directions=turning_directions,
+            yaw_rate_magnitude=(fixed_yaw_rate, fixed_yaw_rate),
+        ),
+        # Uniform magnitude and sign together give a uniform signed yaw range.
+        VelocityStageCfg(
+            lin_vel_x=walking_range,
+            standing_probability=walking_stop_probability,
+            additional_directions=turning_directions,
+            yaw_rate_magnitude=(0.0, maximum_yaw_rate),
         ),
     )
     return VelocityCurriculumCommandCfg(
@@ -245,6 +277,7 @@ def make_velocity_command_cfg() -> VelocityCurriculumCommandCfg:
         resampling_time_range=(3.0, 8.0),
         rel_standing_envs=stages[-1].standing_probability,
         additional_directions=stages[-1].additional_directions,
+        yaw_rate_magnitude=stages[-1].yaw_rate_magnitude,
         rel_heading_envs=0.0,
         rel_forward_envs=0.0,
         rel_world_envs=0.0,
@@ -254,7 +287,7 @@ def make_velocity_command_cfg() -> VelocityCurriculumCommandCfg:
         ranges=UniformVelocityCommandCfg.Ranges(
             lin_vel_x=stages[-1].lin_vel_x,
             lin_vel_y=(0.0, 0.0),
-            ang_vel_z=(0.0, 0.0),
+            ang_vel_z=stages[-1].ang_vel_z,
             heading=None,
         ),
     )

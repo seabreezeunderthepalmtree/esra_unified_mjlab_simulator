@@ -24,6 +24,8 @@
    uv run --no-sync wandb login
    ```
    Create an API key in your [W&B account settings](https://wandb.ai/settings), then paste it into the terminal when prompted. Keep the key private. Without a configured API key, training exits with `No API key configured` before the first training iteration.
+
+   Note that W&B is not available in China. Use TensorBoard instead.
 - Training:
    Use the default CUDA GPU:
    ```bash
@@ -36,12 +38,12 @@
 
    To continue training from an existing checkpoint:
    ```bash
-   MUJOCO_GL=disable uv run --no-sync train Esra-Velocity-Rough-CCBR-Leo --gpu-ids "[0]" --env.scene.num-envs 4096 --agent.max-iterations 1500 --agent.resume True --agent.load-run "2026-11-27_21-27-02" --agent.load-checkpoint "model_1499.pt" > train.log 2>&1
+   MUJOCO_GL=disable uv run --no-sync train Esra-Velocity-Rough-CCBR-Leo --gpu-ids "[0]" --env.scene.num-envs 4096 --agent.max-iterations 1500 --agent.resume True --agent.load-run "2026-11-28_02-46-13" --agent.load-checkpoint "model_1499.pt" > train.log 2>&1
    ```
 
-   Add `--agent.start-stage 4` to start with the new directions (valid: `1`–`5`, default: `1`). Combine it with the resume options above to continue from a trained model.
+   Add `--agent.start-stage 6` (valid values: `1`–`7`, default: `1`) with the resume options to continue a model trained through Stage 5 with yaw commands.
 
-   Stage 4 keeps forward speed at 0.3–1 m/s and adds backward/left/right at 0.3 m/s. Stage 5 uses 0.3–1 m/s in all four directions. Both use 30% stop, equally likely moving directions, and uniformly sampled 3–8-second command durations. The existing reward/value-loss stability rule advances stages automatically; Stage 5 stability ends training. See [Run 5](reports/run5/doc.md).
+   Stage 6 uses fixed yaw rates of −0.5 or +0.5 rad/s; Stage 7 samples yaw uniformly from −0.7 to +0.7 rad/s. Yaw is independent of the planar command: forward/backward/left/right at 0.3–1 m/s, or zero translation for in-place turns (five equally likely choices outside full stops). Both stages keep 30% full stops (`vx = vy = yaw_rate = 0`), uniform 3–8-second command durations, and the existing stability rule. Stage 7 stability ends training. See [Run 5](reports/run5/doc.md).
 
 - Saved models:
    Checkpoints are saved every 50 iterations and at the end of training:
@@ -68,3 +70,4 @@
     - `leo_policy_viewer.py`: Load a policy checkpoint and inspect random/manual commands and random/directional pushes using the training environment.
 
 
+MUJOCO_GL=disable uv run --no-sync train Esra-Velocity-Rough-CCBR-Leo --gpu-ids "[0]" --env.scene.num-envs 4096 --agent.max-iterations 2000 --agent.resume True --agent.load-run "2026-11-27_21-27-02" --agent.start-stage 4 --agent.load-checkpoint "stage_3_stable_model_1973.pt" > train.log 2>&1
